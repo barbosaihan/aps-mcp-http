@@ -6,3 +6,6 @@ export { getIssues } from "./get-issues.js";
 export { getIssueTypes } from "./get-issue-types.js";
 export { getIssueRootCauses } from "./get-issue-root-causes.js";
 export { getIssueComments } from "./get-issue-comments.js";
+export { getUsersByAccount } from "./get-users-by-account.js";
+export { createIssue } from "./create-issue.js";
+export { getUserProjects } from "./get-user-projects.js";
