@@ -46,14 +46,12 @@ export const getAllIssues: Tool<typeof schema> = {
 
                     const issues = await issuesClient.getIssues(projectId, { accessToken });
                     
-                    // Handle different response formats
+                    // Handle different response formats - same logic as get-issues.ts
                     let results = null;
                     if (issues?.results && Array.isArray(issues.results)) {
                         results = issues.results;
                     } else if (Array.isArray(issues)) {
                         results = issues;
-                    } else if (issues?.data && Array.isArray(issues.data)) {
-                        results = issues.data;
                     }
 
                     // Filter by status if provided
@@ -110,13 +108,14 @@ export const getAllIssues: Tool<typeof schema> = {
             };
 
             projectIssuesResults.forEach((result) => {
+                const count = result.count || 0;
                 if (result.error) {
                     summary.projectsWithErrors++;
-                } else if (result.count > 0) {
+                } else if (count > 0) {
                     summary.projectsWithIssues++;
                 }
                 
-                summary.totalIssues += result.count;
+                summary.totalIssues += count;
                 allIssues.push(...result.issues);
                 
                 summary.projects.push({
