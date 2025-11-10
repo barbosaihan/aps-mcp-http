@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -25,16 +24,14 @@ export const adminAddProjectUser: Tool<typeof schema> = {
                 throw new Error("Either email or userId must be provided");
             }
             
-            const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-            
-            // Remove "b." prefix from projectId if present
-            const projectIdClean = projectId.startsWith("b.") ? projectId.substring(2) : projectId;
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const projectIdClean = cleanProjectId(projectId);
             
             if (!projectIdClean || projectIdClean.trim() === "") {
                 throw new Error("projectId is required and cannot be empty");
             }
             
-            const url = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectIdClean}/users`;
+            const url = buildApiUrl(`construction/admin/v1/projects/${projectIdClean}/users`);
             
             const userData: any = {};
             if (email) userData.email = email;
@@ -47,38 +44,20 @@ export const adminAddProjectUser: Tool<typeof schema> = {
                 userData.products = [];
             }
             
-            const response = await fetch(url, {
+            const response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${accessToken}`,
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify(userData)
-            });
+            }, 30000, 0); // Sem retry para POST
             
             if (!response.ok) {
-                const errorText = await response.text();
-                let errorMessage = `Could not add user to project (HTTP ${response.status})`;
-                
-                try {
-                    const errorJson = JSON.parse(errorText);
-                    errorMessage = errorJson.developerMessage || errorJson.message || errorMessage;
-                } catch {
-                    errorMessage = errorText || errorMessage;
-                }
-                
-                throw new Error(JSON.stringify({
-                    error: "Failed to add user to project",
-                    message: errorMessage,
-                    projectId: projectIdClean,
-                    email: email || undefined,
-                    userId: userId || undefined,
-                    statusCode: response.status,
-                    url: url
-                }));
+                throw await handleApiError(response, { operation: "add user to project", projectId: projectIdClean, email, userId });
             }
             
-            const user = await response.json();
+            const user = await response.json() as any;
             return {
                 content: [{
                     type: "text" as const,
@@ -91,18 +70,16 @@ export const adminAddProjectUser: Tool<typeof schema> = {
                 }]
             };
         } catch (error: any) {
-            const errorMessage = error?.message || error?.toString() || "Unknown error";
-            const errorDetails = {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
                 error: "Failed to add user to project",
-                message: errorMessage,
+                message: error?.message || error?.toString() || "Unknown error",
                 projectId: projectId?.replace(/^b\./, "") || "unknown",
                 email: email || undefined,
-                userId: userId || undefined,
-                ...(error?.response?.status && { statusCode: error.response.status }),
-                ...(error?.response?.data && { apiError: error.response.data })
-            };
-            
-            throw new Error(JSON.stringify(errorDetails));
+                userId: userId || undefined
+            }));
         }
     }
 };

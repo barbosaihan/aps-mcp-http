@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getAccessToken } from "./common.js";
+import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -19,46 +19,55 @@ export const adminCreateProject: Tool<typeof schema> = {
     description: "Create a new project in Autodesk Construction Cloud using Admin API",
     schema,
     callback: async ({ accountId, name, type, serviceTypes, templateId, region }: SchemaType) => {
-        const accessToken = await getAccessToken(["account:write"]);
-        
-        // Remove "b." prefix from accountId if present
-        const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
-        const url = `https://developer.api.autodesk.com/construction/admin/v1/accounts/${accountIdClean}/projects`;
-        
-        const projectData: any = {
-            name,
-            type: type || "Commercial"  // Required: Project construction type (e.g., "Office", "Commercial", "Hospital", "Oil & Gas", etc.)
-        };
-        
-        if (serviceTypes) projectData.serviceTypes = serviceTypes;
-        if (templateId) projectData.templateId = templateId;
-        if (region) projectData.region = region;
-        
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(projectData)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Could not create project: ${await response.text()}`);
+        try {
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accountIdClean = cleanAccountId(accountId);
+            const url = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
+            
+            const projectData: any = {
+                name,
+                type: type || "Commercial"  // Required: Project construction type (e.g., "Office", "Commercial", "Hospital", "Oil & Gas", etc.)
+            };
+            
+            if (serviceTypes) projectData.serviceTypes = serviceTypes;
+            if (templateId) projectData.templateId = templateId;
+            if (region) projectData.region = region;
+            
+            const response = await fetchWithTimeout(url, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${accessToken}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(projectData)
+            }, 30000, 0); // Sem retry para POST
+            
+            if (!response.ok) {
+                throw await handleApiError(response, { operation: "create project", accountId: accountIdClean });
+            }
+            
+            const project = await response.json() as any;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify({
+                        id: project.id,
+                        name: project.name,
+                        accountId: project.accountId,
+                        ...project
+                    })
+                }]
+            };
+        } catch (error: any) {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
+                error: "Failed to create project",
+                message: error?.message || error?.toString() || "Unknown error",
+                accountId: accountId?.replace(/^b\./, "") || "unknown"
+            }));
         }
-        
-        const project = await response.json();
-        return {
-            content: [{
-                type: "text" as const,
-                text: JSON.stringify({
-                    id: project.id,
-                    name: project.name,
-                    accountId: project.accountId,
-                    ...project
-                })
-            }]
-        };
     }
 };
 
