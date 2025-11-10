@@ -125,6 +125,64 @@ export function buildApiUrl(endpoint: string, baseUrl: string = "https://develop
 }
 
 /**
+ * Resolve projectId: se for GUID válido, retorna ele; se for nome, busca o projeto na conta e retorna GUID
+ * 
+ * @param projectId - GUID do projeto ou nome do projeto
+ * @param accountId - ID da conta (obrigatório se projectId for nome)
+ * @param accessToken - Token de acesso
+ * @returns GUID válido do projeto
+ */
+export async function resolveProjectId(
+    projectId: string,
+    accountId: string | undefined,
+    accessToken: string
+): Promise<string> {
+    // Limpar projectId (remover prefixo "b." se presente)
+    let cleanedProjectId = cleanProjectId(projectId);
+    
+    // Verificar se é um GUID válido
+    if (isValidGuid(cleanedProjectId)) {
+        return cleanedProjectId;
+    }
+    
+    // Se não é um GUID válido, pode ser um nome de projeto
+    // Nesse caso, precisamos do accountId para buscar o projeto
+    if (!accountId) {
+        throw new Error(`Invalid project ID: "${projectId}" is not a valid GUID. Please provide accountId when using project name.`);
+    }
+    
+    // Buscar projeto pelo nome
+    const { DataManagementClient } = await import("@aps_sdk/data-management");
+    const dataManagementClient = new DataManagementClient();
+    const accountIdClean = cleanProjectId(accountId);
+    const projects = await dataManagementClient.getHubProjects(accountIdClean, { accessToken });
+    
+    if (!projects.data || projects.data.length === 0) {
+        throw new Error(`No projects found in account ${accountIdClean}`);
+    }
+    
+    // Procurar projeto pelo nome (case-insensitive)
+    const projectName = cleanedProjectId;
+    const foundProject = projects.data.find((project) => {
+        const projectNameFromData = project.attributes?.name || (project as any).name || "";
+        return projectNameFromData.toLowerCase() === projectName.toLowerCase();
+    });
+    
+    if (!foundProject) {
+        throw new Error(`Project "${projectName}" not found in account ${accountIdClean}. Available projects: ${projects.data.map(p => p.attributes?.name || p.id).join(", ")}`);
+    }
+    
+    // Extrair GUID do projeto encontrado
+    const extractedGuid = extractProjectGuid(foundProject);
+    
+    if (!extractedGuid || !isValidGuid(extractedGuid)) {
+        throw new Error(`Failed to extract valid GUID from project "${projectName}". Project ID: ${foundProject.id}`);
+    }
+    
+    return extractedGuid;
+}
+
+/**
  * Trata erros da API de forma consistente
  */
 export async function handleApiError(response: Response, context: { operation: string; [key: string]: any }): Promise<Error> {

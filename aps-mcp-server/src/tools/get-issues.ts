@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
-import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, extractProjectGuid, cleanProjectId, isValidGuid } from "./common.js";
+import { getAccessToken, resolveProjectId } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -17,47 +16,9 @@ export const getIssues: Tool<typeof schema> = {
         try {
             const accessToken = await getAccessToken(["data:read"]);
             const issuesClient = new IssuesClient();
-            const dataManagementClient = new DataManagementClient();
             
-            // Limpar projectId (remover prefixo "b." se presente)
-            let cleanedProjectId = cleanProjectId(projectId);
-            
-            // Verificar se é um GUID válido
-            if (!isValidGuid(cleanedProjectId)) {
-                // Se não é um GUID válido, pode ser um nome de projeto
-                // Nesse caso, precisamos do accountId para buscar o projeto
-                if (!accountId) {
-                    throw new Error(`Invalid project ID: "${projectId}" is not a valid GUID. Please provide accountId when using project name.`);
-                }
-                
-                // Buscar projeto pelo nome
-                const accountIdClean = cleanProjectId(accountId);
-                const projects = await dataManagementClient.getHubProjects(accountIdClean, { accessToken });
-                
-                if (!projects.data || projects.data.length === 0) {
-                    throw new Error(`No projects found in account ${accountIdClean}`);
-                }
-                
-                // Procurar projeto pelo nome (case-insensitive)
-                const projectName = cleanedProjectId;
-                const foundProject = projects.data.find((project) => {
-                    const projectNameFromData = project.attributes?.name || (project as any).name || "";
-                    return projectNameFromData.toLowerCase() === projectName.toLowerCase();
-                });
-                
-                if (!foundProject) {
-                    throw new Error(`Project "${projectName}" not found in account ${accountIdClean}. Available projects: ${projects.data.map(p => p.attributes?.name || p.id).join(", ")}`);
-                }
-                
-                // Extrair GUID do projeto encontrado
-                const extractedGuid = extractProjectGuid(foundProject);
-                
-                if (!extractedGuid || !isValidGuid(extractedGuid)) {
-                    throw new Error(`Failed to extract valid GUID from project "${projectName}". Project ID: ${foundProject.id}`);
-                }
-                
-                cleanedProjectId = extractedGuid;
-            }
+            // Resolver projectId (GUID ou nome) para GUID válido
+            const cleanedProjectId = await resolveProjectId(projectId, accountId, accessToken);
             
             // Chamar API de issues com GUID válido
             const issues = await issuesClient.getIssues(cleanedProjectId, { accessToken });

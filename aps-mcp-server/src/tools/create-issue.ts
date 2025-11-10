@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { getAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, resolveProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
-    projectId: z.string().nonempty(),
+    projectId: z.string().nonempty().describe("Project ID (GUID) or project name. If a name is provided, the tool will search for the project and use its GUID."),
+    accountId: z.string().nonempty().optional().describe("Account ID (required if projectId is a project name instead of a GUID)"),
     title: z.string().nonempty(),
     issueSubtypeId: z.string().nonempty(),
     status: z.enum(["draft", "open", "pending", "in_progress", "completed", "in_review", "not_approved", "in_dispute", "closed"]),
@@ -23,12 +24,15 @@ type SchemaType = z.infer<typeof zodSchema>;
 
 export const createIssue: Tool<typeof schema> = {
     title: "create-issue",
-    description: "Adds an issue to a project in Autodesk Construction Cloud.",
+    description: "Adds an issue to a project in Autodesk Construction Cloud. Accepts either a project GUID or project name. If a name is provided, accountId is required.",
     schema,
-    callback: async ({ projectId, title, issueSubtypeId, status, description, assignedTo, assignedToType, dueDate, startDate, locationId, locationDetails, rootCauseId, published }: SchemaType) => {
+    callback: async ({ projectId, accountId, title, issueSubtypeId, status, description, assignedTo, assignedToType, dueDate, startDate, locationId, locationDetails, rootCauseId, published }: SchemaType) => {
         try {
             const accessToken = await getAccessToken(["data:write"]);
-            const projectIdClean = cleanProjectId(projectId);
+            
+            // Resolver projectId (GUID ou nome) para GUID válido
+            const projectIdClean = await resolveProjectId(projectId, accountId, accessToken);
+            
             const url = buildApiUrl(`construction/issues/v1/projects/${projectIdClean}/issues`);
             
             const issueData: any = {
