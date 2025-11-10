@@ -24,17 +24,8 @@ COPY ./aps-mcp-server .
 # Compilar TypeScript
 RUN npm run build
 
-# Stage 2: Runtime stage - imagem final otimizada
-FROM python:3.10-slim-bookworm
-
-# Instalar apenas Node.js (sem npm, já que não precisamos mais)
-RUN apt-get update && \
-    apt-get install -y nodejs && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-# Instalar mcp-proxy
-RUN pip install --no-cache-dir mcp-proxy
+# Stage 2: Runtime stage - imagem final otimizada (apenas Node.js)
+FROM node:20-slim
 
 WORKDIR /app
 
@@ -52,8 +43,13 @@ RUN echo "APS_CLIENT_ID=fJSqoo0fTrXvMVPCMp8ZkpQXNICdoxqHYAgATZEVpiduaiyo" > /app
     echo "APS_SA_KEY_ID=4f7741c0-dcf5-443f-a074-eb272068aa4a" >> /app/aps-mcp-server/.env && \
     echo 'APS_SA_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAnHW0W8/NbuSwogIZA2qWjhhYsdhGTkKSsfVT9HxyZW7Sswn4\nOVmTuJ15HHZldryQ4F8WLEKGzqJoxrKvkZSOElJ8gbTUU64Vgli6EjsA/y0nsU6z\nl1PTIkONBpE17OY+EAiqcW680h3VY2eIUBscuqCVI7lN5NZUclytYyp6RFRZ65Ph\nPv8uHkbodwEeH9aO448v56ZFeLJdhQJO3FwG5Ajfgqn54QwePFynBQBzHiZ2BRbj\nWg+u38vJgSMOsJSMY4L+1rxIie+QPJEhzqbMhIF+XjTEHSfLBZzUP5AL+O+F35xR\ntwFJvvwIcMj2NgbBDB0vPHIFvFKohcA/GG6N1QIDAQABAoIBAEMgCJofRD7gZJuN\nFNgvYZpi/aKHbFplG3S4ESXiQl4cNs9TZqiMMuFQxkYc0Zkoe2uXv/aLMDT03sjo\nnoRx3KYlt38aasHf/SBoGqR5pgrUf6QFZO12rC2WF6oKoL0bZuMQJLf3z5DB9evo\n3kWn7CJxhKrH9JBKF/7cnhLehYhMj6Np5LvqlCwWBt19bhAI32BBH/3xPyNqXNlf\n5W34sQOyVfR48KcpKc4nLWdaWEXolKEUmw3WJYgmn5VBZD7cUuKLobGPsSpwHyza\n/oUGRSTXbNJU0R7kCKVb/IMZ2664Q4rPucy6HjM2px9ES6+jjluU+lKxtUBPiO+O\nOxI6Gr0CgYEA3HYikZCWFG9y6vj9v/tTJN4KIpBGmu4O3F/3QLwpgs7v4egZp3i3\nHSrr4m82kDb7tqB69eGkhFXvAGvbe6b/f/+oMhbSeC+gqrM8uL+ExRob8+uxuDiy\nx5IAym7U2I4XT3RagzSrQD+Js9mhMa/s/1wE13xv7v6bJhwJcTEKGLMCgYEAta5j\nbNGEDxHb/BOHmdtbVL4R2MBU8KIriXyykTonb34uos2f3y0WtZhwDXuGBcEAPdD/\n7wOhHjCPn+c1n8zSFIyVvNUraE1CJPFLyOMYSQhxIAz6c7Lz66qPdzx3Ek6XxC4i\nTry3heJ/yxvIBZsKGv7nPcuSLEhr5pxO2VXZs1cCgYEAtQlJn9FkfMl8S9pFvbYr\nc5XmKrXhVO5yQ6OGjaE2UVWPhSosjurBK/GIHLyIyOptz21/K5SsnYNXrTfk12iu\nXTTasK8vDETIIgTnsyqKY7TqCWad3RKqNNn/TjyvClm8aKG6hg3lJvBGKutmxD+c\nVaIB09Y6sL5hN21Ej6/eg6MCgYAYe+fqQlIJtd5vmjIsCePFB9hf3YuU4kX7wVJP\nQAcQf3DJf+yLpwfocSKornzhSaE+s2vKSjLsXp78baxMXM3y9v8284NmCwNe9yW/\nbNtY/EpCh305GmTE3bd32i4xyWWqio0VD1msMVoHhTbvinVSLgf7y/NnBFuGOIpn\nv6oXAQKBgQDYjcrP3Z2iRuMXglH3mpxt5KTce8kIBX1NqAITb2djjtG/llc4obsw\nf/uWQOPHZcSxLzMRR+ZmgaOD1oEmovy7jlceIQeBECkmdv1hBpsJnNrsPb35CrV8\nw2XmQXvLh6fqM3/vl150B/bS6w9A3EYc+p4wCu3+svzRpJpbuW633w==\n-----END RSA PRIVATE KEY-----\n"' >> /app/aps-mcp-server/.env
 
-# Expor a porta que o proxy vai usar
+# Expor a porta que o servidor HTTP vai usar
 EXPOSE 8080
 
-# Comando final para iniciar a aplicação
-CMD ["mcp-proxy", "--host", "0.0.0.0", "--port", "8080", "node", "/app/aps-mcp-server/build/server.js"]
+# Variáveis de ambiente
+ENV PORT=8080
+ENV HOST=0.0.0.0
+ENV MCP_ENDPOINT=/mcp
+
+# Comando final para iniciar o servidor HTTP nativo (Streamable HTTP)
+CMD ["node", "/app/aps-mcp-server/build/http-server-main.js"]
