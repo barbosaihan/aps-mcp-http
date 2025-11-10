@@ -3,6 +3,8 @@ import { ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import fetch, { RequestInit, Response } from "node-fetch";
 import { APS_CLIENT_ID, APS_CLIENT_SECRET, APS_SA_ID, APS_SA_KEY_ID, APS_SA_PRIVATE_KEY } from "../config.js";
 import { getServiceAccountAccessToken, getClientCredentialsAccessToken } from "../auth.js";
+import { logger } from "../utils/logger.js";
+import { measureTiming, incrementCounter, incrementErrorCounter } from "../utils/metrics.js";
 
 export interface Tool<Args extends ZodRawShape> {
     title: string;
@@ -160,92 +162,173 @@ export async function fetchWithTimeout(
     timeout: number = DEFAULT_TIMEOUT,
     retries: number = 0
 ): Promise<Response> {
-    const isGetRequest = !options.method || options.method === "GET";
-    const maxRetries = isGetRequest ? retries : 0; // Apenas retry para GET
-    
-    // Node.js 15+ tem AbortController global
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-    
-    try {
-        const fetchOptions: RequestInit & { signal?: any } = {
-            ...options,
-            signal: controller.signal
-        };
-        const response = await fetch(url, fetchOptions);
-        clearTimeout(timeoutId);
-        
-        // Retry apenas para GET requests com status 5xx ou timeout
-        if (!response.ok && isGetRequest && maxRetries > 0) {
-            const status = response.status;
-            if (status >= 500 || status === 429) {
-                // Exponential backoff: espera 1s, 2s, 4s...
-                const delay = Math.pow(2, maxRetries - retries) * 1000;
-                await new Promise(resolve => setTimeout(resolve, delay));
-                return fetchWithTimeout(url, options, timeout, retries - 1);
+    return measureTiming(
+        "http.fetch",
+        async () => {
+            const isGetRequest = !options.method || options.method === "GET";
+            const maxRetries = isGetRequest ? retries : 0; // Apenas retry para GET
+            const method = options.method || "GET";
+            
+            logger.debug("HTTP request", { 
+                method, 
+                url, 
+                timeout, 
+                retries: maxRetries 
+            });
+            
+            // Node.js 15+ tem AbortController global
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            
+            try {
+                const fetchOptions: RequestInit & { signal?: any } = {
+                    ...options,
+                    signal: controller.signal
+                };
+                const response = await fetch(url, fetchOptions);
+                clearTimeout(timeoutId);
+                
+                // Log response
+                if (!response.ok) {
+                    logger.warn("HTTP request failed", {
+                        method,
+                        url,
+                        status: response.status,
+                        statusText: response.statusText,
+                    });
+                    incrementErrorCounter("http.fetch", { 
+                        method, 
+                        status: response.status.toString() 
+                    });
+                } else {
+                    incrementCounter("http.fetch", { 
+                        method, 
+                        status: response.status.toString() 
+                    });
+                }
+                
+                // Retry apenas para GET requests com status 5xx ou timeout
+                if (!response.ok && isGetRequest && maxRetries > 0) {
+                    const status = response.status;
+                    if (status >= 500 || status === 429) {
+                        // Exponential backoff: espera 1s, 2s, 4s...
+                        const delay = Math.pow(2, maxRetries - retries) * 1000;
+                        logger.warn("HTTP request retrying", {
+                            method,
+                            url,
+                            status,
+                            attempt: maxRetries - retries + 1,
+                            maxRetries,
+                            delayMs: delay,
+                        });
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        return fetchWithTimeout(url, options, timeout, retries - 1);
+                    }
+                }
+                
+                return response;
+            } catch (error: any) {
+                clearTimeout(timeoutId);
+                
+                // Retry para timeout apenas em GET requests
+                if ((error.name === "AbortError" || error.name === "TimeoutError") && isGetRequest && maxRetries > 0) {
+                    const delay = Math.pow(2, maxRetries - retries) * 1000;
+                    logger.warn("HTTP request timeout, retrying", {
+                        method,
+                        url,
+                        attempt: maxRetries - retries + 1,
+                        maxRetries,
+                        delayMs: delay,
+                    });
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return fetchWithTimeout(url, options, timeout, retries - 1);
+                }
+                
+                logger.error("HTTP request error", error, {
+                    method,
+                    url,
+                    timeout,
+                });
+                throw error;
             }
-        }
-        
-        return response;
-    } catch (error: any) {
-        clearTimeout(timeoutId);
-        
-        // Retry para timeout apenas em GET requests
-        if ((error.name === "AbortError" || error.name === "TimeoutError") && isGetRequest && maxRetries > 0) {
-            const delay = Math.pow(2, maxRetries - retries) * 1000;
-            await new Promise(resolve => setTimeout(resolve, delay));
-            return fetchWithTimeout(url, options, timeout, retries - 1);
-        }
-        
-        throw error;
-    }
+        },
+        { method: options.method || "GET", url: new URL(url).pathname }
+    );
 }
 
 /**
  * Obtém access token usando service account (com cache)
  */
 export async function getAccessToken(scopes: string[]): Promise<string> {
-    const cacheKey = scopes.join("+");
-    let credentials = credentialsCache.get(cacheKey);
-    
-    // Verifica se o token está válido (com margem de 1 minuto)
-    if (!credentials || credentials.expiresAt < Date.now() + 60000) {
-        const { access_token, expires_in } = await getServiceAccountAccessToken(
-            APS_CLIENT_ID!,
-            APS_CLIENT_SECRET!,
-            APS_SA_ID!,
-            APS_SA_KEY_ID!,
-            APS_SA_PRIVATE_KEY!,
-            scopes
-        );
-        credentials = {
-            accessToken: access_token,
-            expiresAt: Date.now() + expires_in * 1000
-        };
-        credentialsCache.set(cacheKey, credentials);
-    }
-    return credentials.accessToken;
+    return measureTiming(
+        "auth.getAccessToken",
+        async () => {
+            const cacheKey = scopes.join("+");
+            let credentials = credentialsCache.get(cacheKey);
+            
+            // Verifica se o token está válido (com margem de 1 minuto)
+            if (!credentials || credentials.expiresAt < Date.now() + 60000) {
+                logger.debug("Fetching new service account token", { scopes });
+                const { access_token, expires_in } = await getServiceAccountAccessToken(
+                    APS_CLIENT_ID!,
+                    APS_CLIENT_SECRET!,
+                    APS_SA_ID!,
+                    APS_SA_KEY_ID!,
+                    APS_SA_PRIVATE_KEY!,
+                    scopes
+                );
+                credentials = {
+                    accessToken: access_token,
+                    expiresAt: Date.now() + expires_in * 1000
+                };
+                credentialsCache.set(cacheKey, credentials);
+                logger.debug("Service account token cached", { 
+                    scopes, 
+                    expiresIn: expires_in 
+                });
+                incrementCounter("auth.tokenCache", { type: "miss", auth: "service-account" });
+            } else {
+                incrementCounter("auth.tokenCache", { type: "hit", auth: "service-account" });
+            }
+            return credentials.accessToken;
+        },
+        { scopes: scopes.join(",") }
+    );
 }
 
 /**
  * Obtém access token usando client credentials (com cache)
  */
 export async function getCachedClientCredentialsAccessToken(scopes: string[]): Promise<string> {
-    const cacheKey = scopes.join("+");
-    let credentials = clientCredentialsCache.get(cacheKey);
-    
-    // Verifica se o token está válido (com margem de 1 minuto)
-    if (!credentials || credentials.expiresAt < Date.now() + 60000) {
-        const { access_token, expires_in } = await getClientCredentialsAccessToken(
-            APS_CLIENT_ID!,
-            APS_CLIENT_SECRET!,
-            scopes
-        );
-        credentials = {
-            accessToken: access_token,
-            expiresAt: Date.now() + expires_in * 1000
-        };
-        clientCredentialsCache.set(cacheKey, credentials);
-    }
-    return credentials.accessToken;
+    return measureTiming(
+        "auth.getClientCredentialsAccessToken",
+        async () => {
+            const cacheKey = scopes.join("+");
+            let credentials = clientCredentialsCache.get(cacheKey);
+            
+            // Verifica se o token está válido (com margem de 1 minuto)
+            if (!credentials || credentials.expiresAt < Date.now() + 60000) {
+                logger.debug("Fetching new client credentials token", { scopes });
+                const { access_token, expires_in } = await getClientCredentialsAccessToken(
+                    APS_CLIENT_ID!,
+                    APS_CLIENT_SECRET!,
+                    scopes
+                );
+                credentials = {
+                    accessToken: access_token,
+                    expiresAt: Date.now() + expires_in * 1000
+                };
+                clientCredentialsCache.set(cacheKey, credentials);
+                logger.debug("Client credentials token cached", { 
+                    scopes, 
+                    expiresIn: expires_in 
+                });
+                incrementCounter("auth.tokenCache", { type: "miss", auth: "client-credentials" });
+            } else {
+                incrementCounter("auth.tokenCache", { type: "hit", auth: "client-credentials" });
+            }
+            return credentials.accessToken;
+        },
+        { scopes: scopes.join(",") }
+    );
 }
