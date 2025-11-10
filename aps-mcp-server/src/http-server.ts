@@ -644,23 +644,57 @@ class MCPHttpServer {
      * Handle tools/list request
      */
     private handleToolsList(requestId: string | number | null | undefined): JsonRpcResponse {
-        const toolsList = Object.values(tools).map((tool) => ({
-            name: tool.title,
-            description: tool.description,
-            inputSchema: {
-                type: "object",
-                properties: this.schemaToJsonSchema(tool.schema),
-                required: this.getRequiredFields(tool.schema),
-            },
-        }));
+        try {
+            const toolsList = Object.values(tools).map((tool) => {
+                try {
+                    const properties = this.schemaToJsonSchema(tool.schema);
+                    const required = this.getRequiredFields(tool.schema);
+                    
+                    return {
+                        name: tool.title,
+                        description: tool.description,
+                        inputSchema: {
+                            type: "object",
+                            properties,
+                            required,
+                        },
+                    };
+                } catch (error: any) {
+                    logger.error(`Error processing tool schema: ${tool.title}`, error, {
+                        toolName: tool.title,
+                        schemaType: typeof tool.schema,
+                    });
+                    // Retornar schema vazio como fallback
+                    return {
+                        name: tool.title,
+                        description: tool.description,
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                            required: [],
+                        },
+                    };
+                }
+            });
 
-        return {
-            jsonrpc: "2.0",
-            id: requestId,
-            result: {
-                tools: toolsList,
-            },
-        };
+            return {
+                jsonrpc: "2.0",
+                id: requestId,
+                result: {
+                    tools: toolsList,
+                },
+            };
+        } catch (error: any) {
+            logger.error("Error in handleToolsList", error);
+            return {
+                jsonrpc: "2.0",
+                id: requestId,
+                error: {
+                    code: -32603,
+                    message: error.message || "Internal error",
+                },
+            };
+        }
     }
 
     /**
@@ -725,61 +759,296 @@ class MCPHttpServer {
 
     /**
      * Converte schema Zod para JSON Schema
+     * Trata schemas vazios e valores undefined/null
+     * Suporta tanto objetos planos (ZodRawShape) quanto z.object() instanciado
      */
     private schemaToJsonSchema(schema: any): Record<string, any> {
         const properties: Record<string, any> = {};
+        
+        // Se schema é vazio ou não existe, retornar objeto vazio
+        if (!schema || typeof schema !== "object") {
+            return properties;
+        }
+        
+        // Verificar se é um z.object() instanciado (tem _def.shape)
+        if (schema._def && schema._def.typeName === "ZodObject" && schema._def.shape) {
+            // Se for um z.object() instanciado, usar o shape
+            return this.schemaToJsonSchema(schema._def.shape);
+        }
+        
+        // Se schema é um objeto vazio, retornar objeto vazio
+        if (Object.keys(schema).length === 0) {
+            return properties;
+        }
+        
         for (const [key, value] of Object.entries(schema)) {
+            // Pular propriedades que não são do schema (como métodos, símbolos, etc.)
+            if (key.startsWith("_") || typeof value === "function") {
+                continue;
+            }
+            
+            // Validar se o valor existe e é um objeto
+            if (!value || typeof value !== "object") {
+                logger.warn("Invalid schema value for key", { key, valueType: typeof value, value });
+                continue;
+            }
+            
             const zodSchema = value as any;
-            if (zodSchema._def) {
-                properties[key] = this.zodToJsonSchema(zodSchema);
+            
+            // Validar se é um schema Zod válido
+            // Verificar se tem _def E se _def tem typeName
+            if (zodSchema && typeof zodSchema === "object" && zodSchema._def) {
+                if (zodSchema._def.typeName) {
+                    try {
+                        properties[key] = this.zodToJsonSchema(zodSchema);
+                    } catch (error: any) {
+                        logger.warn("Error converting Zod schema to JSON Schema", {
+                            key,
+                            error: error.message,
+                            stack: error.stack,
+                            typeName: zodSchema._def?.typeName,
+                        });
+                        // Fallback para string se houver erro
+                        properties[key] = { type: "string" };
+                    }
+                } else {
+                    // Tem _def mas não tem typeName - usar fallback
+                    logger.debug("Schema value has _def but no typeName, using fallback", { key });
+                    properties[key] = { type: "string" };
+                }
+            } else {
+                // Se não for um schema Zod válido, usar fallback
+                logger.debug("Schema value is not a valid Zod schema, using fallback", { 
+                    key,
+                    hasDef: !!zodSchema?._def,
+                });
+                properties[key] = { type: "string" };
             }
         }
+        
         return properties;
     }
 
     /**
      * Converte um tipo Zod para JSON Schema
+     * Com validações de segurança para evitar erros
+     * Suporta tipos compostos como ZodEffects (z.string().nonempty(), z.string().min(), etc.)
      */
     private zodToJsonSchema(zodSchema: any): any {
-        const def = zodSchema._def;
-        if (def.typeName === "ZodString") {
+        // Validar entrada
+        if (!zodSchema || typeof zodSchema !== "object") {
             return { type: "string" };
-        } else if (def.typeName === "ZodNumber") {
-            return { type: "number" };
-        } else if (def.typeName === "ZodBoolean") {
-            return { type: "boolean" };
-        } else if (def.typeName === "ZodArray") {
-            return {
-                type: "array",
-                items: this.zodToJsonSchema(def.innerType),
-            };
-        } else if (def.typeName === "ZodEnum") {
-            return {
-                type: "string",
-                enum: def.values,
-            };
-        } else if (def.typeName === "ZodOptional") {
-            return this.zodToJsonSchema(def.innerType);
-        } else if (def.typeName === "ZodDefault") {
-            return this.zodToJsonSchema(def.innerType);
         }
-        return { type: "string" }; // Fallback
+        
+        const def = zodSchema._def;
+        if (!def || !def.typeName) {
+            return { type: "string" };
+        }
+        
+        try {
+            switch (def.typeName) {
+                case "ZodString":
+                    return { type: "string" };
+                    
+                case "ZodNumber":
+                    return { type: "number" };
+                    
+                case "ZodBoolean":
+                    return { type: "boolean" };
+                    
+                case "ZodArray":
+                    // Validar innerType antes de usar
+                    if (def.innerType) {
+                        if (typeof def.innerType === "object" && def.innerType !== null) {
+                            // Verificar se tem _def antes de chamar recursivamente
+                            if (def.innerType._def && def.innerType._def.typeName) {
+                                try {
+                                    return {
+                                        type: "array",
+                                        items: this.zodToJsonSchema(def.innerType),
+                                    };
+                                } catch (error: any) {
+                                    logger.debug("Error processing ZodArray innerType", {
+                                        error: error.message,
+                                        innerTypeType: def.innerType?._def?.typeName,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    return { type: "array", items: { type: "string" } };
+                    
+                case "ZodEnum":
+                    if (def.values && Array.isArray(def.values)) {
+                        return {
+                            type: "string",
+                            enum: def.values,
+                        };
+                    }
+                    return { type: "string" };
+                    
+                case "ZodOptional":
+                    // Validar innerType antes de usar recursivamente
+                    if (def.innerType) {
+                        if (typeof def.innerType === "object" && def.innerType !== null) {
+                            // Verificar se tem _def antes de chamar recursivamente
+                            if (def.innerType._def && def.innerType._def.typeName) {
+                                try {
+                                    return this.zodToJsonSchema(def.innerType);
+                                } catch (error: any) {
+                                    logger.debug("Error processing ZodOptional innerType", {
+                                        error: error.message,
+                                        innerTypeType: def.innerType?._def?.typeName,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: campo opcional sem tipo conhecido = qualquer tipo
+                    return { type: "string" };
+                    
+                case "ZodDefault":
+                    // Validar innerType antes de usar recursivamente
+                    if (def.innerType) {
+                        if (typeof def.innerType === "object" && def.innerType !== null) {
+                            // Verificar se tem _def antes de chamar recursivamente
+                            if (def.innerType._def && def.innerType._def.typeName) {
+                                try {
+                                    return this.zodToJsonSchema(def.innerType);
+                                } catch (error: any) {
+                                    logger.debug("Error processing ZodDefault innerType", {
+                                        error: error.message,
+                                        innerTypeType: def.innerType?._def?.typeName,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    // Fallback: campo com default sem tipo conhecido = qualquer tipo
+                    return { type: "string" };
+                    
+                case "ZodEffects":
+                    // ZodEffects é usado para validações como .refine(), .transform(), etc.
+                    // Precisamos extrair o schema interno (pode estar em def.schema ou def.innerType)
+                    let innerSchema = def.schema || def.innerType;
+                    if (innerSchema && typeof innerSchema === "object" && innerSchema._def && innerSchema._def.typeName) {
+                        try {
+                            return this.zodToJsonSchema(innerSchema);
+                        } catch (error: any) {
+                            logger.debug("Error processing ZodEffects schema", {
+                                error: error.message,
+                            });
+                        }
+                    }
+                    // Se não conseguir extrair, assumir string (mais comum)
+                    return { type: "string" };
+                    
+                case "ZodObject":
+                    // Se for um objeto Zod, converter suas propriedades
+                    if (def.shape && typeof def.shape === "object") {
+                        try {
+                            return {
+                                type: "object",
+                                properties: this.schemaToJsonSchema(def.shape),
+                                required: this.getRequiredFields(def.shape),
+                            };
+                        } catch (error: any) {
+                            logger.debug("Error processing ZodObject shape", {
+                                error: error.message,
+                            });
+                        }
+                    }
+                    return { type: "object" };
+                    
+                case "ZodRecord":
+                    // z.record() - objeto com chaves dinâmicas
+                    return { type: "object", additionalProperties: true };
+                    
+                default:
+                    logger.debug("Unknown Zod type, using string fallback", {
+                        typeName: def.typeName,
+                    });
+                    return { type: "string" };
+            }
+        } catch (error: any) {
+            logger.warn("Error in zodToJsonSchema", {
+                typeName: def?.typeName || "unknown",
+                error: error.message,
+                stack: error.stack,
+            });
+            return { type: "string" };
+        }
     }
 
     /**
      * Obtém campos obrigatórios do schema
+     * Com validações de segurança
+     * Suporta tipos compostos como ZodEffects, ZodOptional, ZodDefault
+     * Suporta tanto objetos planos (ZodRawShape) quanto z.object() instanciado
      */
     private getRequiredFields(schema: any): string[] {
         const required: string[] = [];
+        
+        // Se schema é vazio ou não existe, retornar array vazio
+        if (!schema || typeof schema !== "object") {
+            return required;
+        }
+        
+        // Verificar se é um z.object() instanciado (tem _def.shape)
+        if (schema._def && schema._def.typeName === "ZodObject" && schema._def.shape) {
+            // Se for um z.object() instanciado, usar o shape
+            return this.getRequiredFields(schema._def.shape);
+        }
+        
+        // Se schema é um objeto vazio, retornar array vazio
+        if (Object.keys(schema).length === 0) {
+            return required;
+        }
+        
         for (const [key, value] of Object.entries(schema)) {
+            // Pular propriedades que não são do schema (como métodos, símbolos, etc.)
+            if (key.startsWith("_") || typeof value === "function") {
+                continue;
+            }
+            
+            // Validar se o valor existe
+            if (!value || typeof value !== "object") {
+                continue;
+            }
+            
             const zodSchema = value as any;
-            if (zodSchema._def) {
+            
+            // Validar se é um schema Zod válido
+            if (zodSchema && typeof zodSchema === "object" && zodSchema._def && zodSchema._def.typeName) {
                 const def = zodSchema._def;
-                if (def.typeName !== "ZodOptional" && def.typeName !== "ZodDefault") {
-                    required.push(key);
+                
+                // Verificar se é opcional ou tem valor padrão
+                if (def.typeName === "ZodOptional" || def.typeName === "ZodDefault") {
+                    // Campo não é obrigatório
+                    continue;
                 }
+                
+                // Se for ZodEffects, verificar o schema interno
+                if (def.typeName === "ZodEffects") {
+                    // ZodEffects pode envolver um Optional, então precisamos verificar recursivamente
+                    const innerSchema = def.schema || def.innerType;
+                    if (innerSchema && typeof innerSchema === "object" && innerSchema._def && innerSchema._def.typeName) {
+                        const innerDef = innerSchema._def;
+                        // Se o schema interno for Optional ou Default, não é obrigatório
+                        if (innerDef.typeName === "ZodOptional" || innerDef.typeName === "ZodDefault") {
+                            continue;
+                        }
+                    }
+                    // ZodEffects sem Optional interno = obrigatório
+                    required.push(key);
+                    continue;
+                }
+                
+                // Todos os outros tipos são obrigatórios
+                required.push(key);
             }
         }
+        
         return required;
     }
 
