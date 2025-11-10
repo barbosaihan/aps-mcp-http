@@ -6,8 +6,18 @@ Quando o servidor MCP e o n8n estão em containers Docker separados, siga estas 
 
 ## 1. Verificar Nome do Serviço MCP
 
-No EasyPanel ou docker-compose, identifique o nome exato do serviço/container do MCP:
-- Exemplo: `aps-mcp-http`, `jarvis-aps-http`, `mcp-server`
+No EasyPanel, identifique o nome exato do serviço/container do MCP:
+
+**Como encontrar no EasyPanel:**
+- Olhe na seção "Domínios" do serviço `aps-http`
+- Você verá um link interno como: `http://jarvis_aps-http:80/`
+- O nome do serviço é a parte antes da porta: `jarvis_aps-http`
+- **IMPORTANTE**: Use exatamente esse nome (pode ter underscore `_` ou hífen `-`)
+
+Exemplos comuns:
+- `jarvis_aps-http` (com underscore)
+- `jarvis-aps-http` (com hífen)
+- `aps-http` (nome simplificado)
 
 ## 2. Configurar URL no n8n
 
@@ -15,10 +25,14 @@ No n8n, configure a URL do MCP usando o **nome do serviço/container**:
 
 ### Campos no n8n:
 
-- **HTTP Stream URL**: `http://nome-do-container-mcp:80/mcp`
-  - Exemplo: `http://aps-mcp-http:80/mcp`
-  - Exemplo: `http://jarvis-aps-http:80/mcp`
-  - **IMPORTANTE**: Use o nome do container, NÃO `0.0.0.0` ou `localhost`
+- **HTTP Stream URL**: `http://nome-do-servico:80/mcp`
+  - Baseado no EasyPanel: `http://jarvis_aps-http:80/mcp`
+  - **IMPORTANTE**: 
+    - Use o nome do serviço exatamente como aparece no EasyPanel (pode ter `_` ou `-`)
+    - Use `http://` (não `https://`) para comunicação interna
+    - Use a porta interna do container (geralmente `80`)
+    - Adicione `/mcp` no final para o endpoint MCP
+    - NÃO use o link público (`https://jarvis-aps-http.qokrrs.easypanel.host/`)
 
 - **HTTP Connection Timeout**: `60000` (60 segundos)
 
@@ -104,14 +118,16 @@ docker logs -f <container-mcp>
 
 ## 📝 Exemplo Completo
 
-### Configuração no n8n:
+### Configuração no n8n (baseado no EasyPanel):
 
 ```
-HTTP Stream URL: http://aps-mcp-http:80/mcp
+HTTP Stream URL: http://jarvis_aps-http:80/mcp
 HTTP Connection Timeout: 60000
 Messages Post Endpoint: (vazio)
 Additional Headers: (vazio)
 ```
+
+**Nota**: Substitua `jarvis_aps-http` pelo nome exato do seu serviço no EasyPanel.
 
 ### Variáveis de Ambiente no Container MCP:
 

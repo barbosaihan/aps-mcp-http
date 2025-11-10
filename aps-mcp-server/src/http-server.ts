@@ -215,31 +215,30 @@ class MCPHttpServer {
                 origin: req.headers.origin,
                 url: req.url,
             });
-            res.writeHead(403, { "Content-Type": "application/json" });
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(403, { 
+                "Content-Type": "application/json",
+                ...corsHeaders
+            });
             res.end(JSON.stringify({ error: "Forbidden: Invalid Origin" }));
             return;
         }
 
-        // CORS headers
-        const origin = req.headers.origin;
-        if (origin) {
-            res.setHeader("Access-Control-Allow-Origin", origin);
-            res.setHeader("Access-Control-Allow-Credentials", "true");
-        }
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id, Last-Event-ID");
-        res.setHeader("Access-Control-Max-Age", "86400");
-
-        // Handle OPTIONS (preflight)
+        // Handle OPTIONS (preflight) - precisa ser antes de outros handlers
         if (req.method === "OPTIONS") {
-            res.writeHead(200);
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(200, corsHeaders);
             res.end();
             return;
         }
 
         // Health check endpoint (não é parte da spec, mas útil)
         if (url.pathname === "/health" && req.method === "GET") {
-            res.writeHead(200, { "Content-Type": "application/json" });
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(200, { 
+                "Content-Type": "application/json",
+                ...corsHeaders
+            });
             res.end(JSON.stringify({ status: "ok", version: "0.0.1" }));
             return;
         }
@@ -256,15 +255,44 @@ class MCPHttpServer {
             } else if (req.method === "DELETE") {
                 await this.handleDeleteRequest(req, res, session);
             } else {
-                res.writeHead(405, { "Content-Type": "application/json" });
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(405, { 
+                    "Content-Type": "application/json",
+                    ...corsHeaders
+                });
                 res.end(JSON.stringify({ error: "Method Not Allowed" }));
             }
             return;
         }
 
         // 404 para outros paths
-        res.writeHead(404, { "Content-Type": "application/json" });
+        const corsHeaders = this.getCorsHeaders(req);
+        res.writeHead(404, { 
+            "Content-Type": "application/json",
+            ...corsHeaders
+        });
         res.end(JSON.stringify({ error: "Not found" }));
+    }
+
+    /**
+     * Retorna headers CORS apropriados
+     */
+    private getCorsHeaders(req: http.IncomingMessage): Record<string, string> {
+        const origin = req.headers.origin;
+        const headers: Record<string, string> = {
+            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Accept, Mcp-Session-Id, Last-Event-ID",
+            "Access-Control-Max-Age": "86400",
+        };
+
+        if (origin) {
+            headers["Access-Control-Allow-Origin"] = origin;
+            headers["Access-Control-Allow-Credentials"] = "true";
+        } else {
+            headers["Access-Control-Allow-Origin"] = "*";
+        }
+
+        return headers;
     }
 
     /**
@@ -279,7 +307,11 @@ class MCPHttpServer {
         // Verificar Accept header
         const accept = req.headers.accept || "";
         if (!accept.includes("text/event-stream")) {
-            res.writeHead(406, { "Content-Type": "application/json" });
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(406, { 
+                "Content-Type": "application/json",
+                ...corsHeaders
+            });
             res.end(JSON.stringify({ error: "Not Acceptable: text/event-stream required" }));
             return;
         }
@@ -305,18 +337,22 @@ class MCPHttpServer {
             }
         }
 
-        // Configurar SSE response
-        res.writeHead(200, {
+        // Configurar SSE response com todos os headers de uma vez
+        const corsHeaders = this.getCorsHeaders(req);
+        const sseHeaders: Record<string, string> = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-        });
+            ...corsHeaders,
+        };
 
-        // Se há session ID, enviar no header (após initialize)
+        // Adicionar session ID se existir
         if (session.id) {
-            res.setHeader("Mcp-Session-Id", session.id);
+            sseHeaders["Mcp-Session-Id"] = session.id;
         }
+
+        res.writeHead(200, sseHeaders);
 
         this.streams.set(streamId, res);
 
@@ -353,7 +389,11 @@ class MCPHttpServer {
             const acceptsSSE = accept.includes("text/event-stream");
 
             if (!acceptsJson && !acceptsSSE) {
-                res.writeHead(406, { "Content-Type": "application/json" });
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(406, { 
+                    "Content-Type": "application/json",
+                    ...corsHeaders
+                });
                 res.end(JSON.stringify({ error: "Not Acceptable: application/json or text/event-stream required" }));
                 return;
             }
@@ -365,7 +405,11 @@ class MCPHttpServer {
             try {
                 messages = JSON.parse(body);
             } catch (error) {
-                res.writeHead(400, { "Content-Type": "application/json" });
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, { 
+                    "Content-Type": "application/json",
+                    ...corsHeaders
+                });
                 res.end(JSON.stringify({
                     jsonrpc: "2.0",
                     error: {
@@ -396,10 +440,15 @@ class MCPHttpServer {
 
             // Se há apenas responses ou notifications, retornar 202 Accepted
             if (requests.length === 0) {
-                res.writeHead(202, { "Content-Type": "application/json" });
+                const corsHeaders = this.getCorsHeaders(req);
+                const headers: Record<string, string> = {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                };
                 if (session.id) {
-                    res.setHeader("Mcp-Session-Id", session.id);
+                    headers["Mcp-Session-Id"] = session.id;
                 }
+                res.writeHead(202, headers);
                 res.end();
                 return;
             }
@@ -408,16 +457,19 @@ class MCPHttpServer {
             const useSSE = acceptsSSE && requests.length > 0;
             
             if (useSSE) {
-                // Iniciar SSE stream
-                res.writeHead(200, {
+                // Iniciar SSE stream com todos os headers de uma vez
+                const corsHeaders = this.getCorsHeaders(req);
+                const sseHeaders: Record<string, string> = {
                     "Content-Type": "text/event-stream",
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
-                });
+                    ...corsHeaders,
+                };
                 if (session.id) {
-                    res.setHeader("Mcp-Session-Id", session.id);
+                    sseHeaders["Mcp-Session-Id"] = session.id;
                 }
+                res.writeHead(200, sseHeaders);
 
                 // Processar requests e enviar responses via SSE
                 for (const request of requests) {
@@ -441,15 +493,32 @@ class MCPHttpServer {
                     }
                 }
 
-                res.writeHead(200, { "Content-Type": "application/json" });
+                const corsHeaders = this.getCorsHeaders(req);
+                const headers: Record<string, string> = {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                };
                 if (session.id) {
-                    res.setHeader("Mcp-Session-Id", session.id);
+                    headers["Mcp-Session-Id"] = session.id;
                 }
+                res.writeHead(200, headers);
                 res.end(JSON.stringify(responses_array.length === 1 ? responses_array[0] : responses_array));
             }
         } catch (error: any) {
             logger.error("Error handling POST request", error);
-            res.writeHead(500, { "Content-Type": "application/json" });
+            // Verificar se a resposta já foi enviada
+            if (res.headersSent) {
+                logger.warn("Response already sent, cannot send error response", {
+                    error: error.message,
+                });
+                return;
+            }
+            
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(500, { 
+                "Content-Type": "application/json",
+                ...corsHeaders
+            });
             res.end(JSON.stringify({
                 jsonrpc: "2.0",
                 error: {
@@ -485,7 +554,11 @@ class MCPHttpServer {
         this.sessions.delete(session.id);
         this.eventIdCounter.delete(session.id);
 
-        res.writeHead(200, { "Content-Type": "application/json" });
+        const corsHeaders = this.getCorsHeaders(req);
+        res.writeHead(200, { 
+            "Content-Type": "application/json",
+            ...corsHeaders
+        });
         res.end(JSON.stringify({ status: "ok" }));
 
         logger.info("Session terminated", { sessionId: session.id });
