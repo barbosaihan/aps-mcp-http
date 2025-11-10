@@ -50,6 +50,70 @@ export function cleanAccountId(accountId: string): string {
 }
 
 /**
+ * Valida se uma string é um GUID válido (UUID v4)
+ */
+export function isValidGuid(value: string): boolean {
+    const guidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    return guidRegex.test(value);
+}
+
+/**
+ * Extrai GUID de uma string URN (ex: "urn:adsk.plm:projects.b.xxx-yyy-zzz")
+ */
+function extractGuidFromUrn(urn: string): string | null {
+    // Padrão URN: urn:adsk.plm:projects.b.GUID ou similares
+    const urnMatch = urn.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    if (urnMatch) {
+        return urnMatch[0];
+    }
+    return null;
+}
+
+/**
+ * Extrai o GUID de um projectId, validando que seja um GUID válido
+ */
+export function extractProjectGuid(project: any): string | null {
+    // Tentar diferentes campos onde o GUID pode estar
+    const possibleIds = [
+        project.id,
+        project.relationships?.project?.data?.id,
+        project.attributes?.id,
+        project.projectId,
+        project.attributes?.projectId
+    ].filter(Boolean);
+    
+    for (const id of possibleIds) {
+        if (!id || typeof id !== 'string') continue;
+        
+        // Se for URN, extrair GUID
+        if (id.startsWith('urn:')) {
+            const guid = extractGuidFromUrn(id);
+            if (guid && isValidGuid(guid)) {
+                return guid;
+            }
+        }
+        
+        // Remover prefixo "b." se presente
+        let cleanId = id.replace(/^b\./, "").trim();
+        
+        // Se ainda contém "b.", pode ser um URN sem "urn:" prefix
+        if (cleanId.includes('b.')) {
+            const guid = extractGuidFromUrn(cleanId);
+            if (guid && isValidGuid(guid)) {
+                return guid;
+            }
+        }
+        
+        // Validar se é um GUID válido direto
+        if (isValidGuid(cleanId)) {
+            return cleanId;
+        }
+    }
+    
+    return null;
+}
+
+/**
  * Constrói URL da API APS com base no endpoint
  */
 export function buildApiUrl(endpoint: string, baseUrl: string = "https://developer.api.autodesk.com"): string {

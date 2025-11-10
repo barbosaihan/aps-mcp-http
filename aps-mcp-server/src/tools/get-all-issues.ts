@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken } from "./common.js";
+import { getAccessToken, extractProjectGuid, cleanProjectId, isValidGuid } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -39,9 +39,47 @@ export const getAllIssues: Tool<typeof schema> = {
             // Step 2: Fetch issues from all projects in parallel
             const projectIssuesPromises = projects.data.map(async (project) => {
                 try {
-                    const projectId = project.id?.replace(/^b\./, "") || project.id;
-                    if (!projectId) {
-                        return { projectId: project.id, projectName: project.attributes?.name, issues: [], error: "Invalid project ID" };
+                    const projectName = project.attributes?.name || (project as any).name || "Unknown";
+                    
+                    // Extrair GUID válido do projeto
+                    let projectId = extractProjectGuid(project);
+                    
+                    // Se não encontrou GUID válido, tentar limpar o ID padrão
+                    if (!projectId && project.id) {
+                        const cleanedId = cleanProjectId(project.id);
+                        // Verificar se após limpar ainda é um GUID válido
+                        // IMPORTANTE: NUNCA usar o nome do projeto como ID
+                        const guidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                        if (guidRegex.test(cleanedId) && cleanedId !== projectName) {
+                            projectId = cleanedId;
+                        }
+                    }
+                    
+                    // Validação final: garantir que não estamos usando o nome como ID
+                    if (!projectId || projectId === projectName || !isValidGuid(projectId)) {
+                        // Construir mensagem de erro detalhada para debugging
+                        const projectDebugInfo = {
+                            id: project.id,
+                            attributes: project.attributes,
+                            relationships: project.relationships,
+                            name: projectName
+                        };
+                        return { 
+                            projectId: null, 
+                            projectName, 
+                            issues: [], 
+                            error: `Invalid project ID: project "${projectName}" does not have a valid GUID. Received project.id="${project.id}". This may indicate the SDK returned unexpected data format. Project data: ${JSON.stringify(projectDebugInfo)}` 
+                        };
+                    }
+
+                    // Validação adicional: garantir que projectId não é o nome
+                    if (projectId.toLowerCase() === projectName.toLowerCase()) {
+                        return {
+                            projectId: null,
+                            projectName,
+                            issues: [],
+                            error: `Security check failed: projectId matches project name "${projectName}". This should never happen.`
+                        };
                     }
 
                     const issues = await issuesClient.getIssues(projectId, { accessToken });
@@ -71,24 +109,44 @@ export const getAllIssues: Tool<typeof schema> = {
                     const issuesWithProject = (results || []).map((issue: any) => ({
                         ...issue,
                         _projectId: projectId,
-                        _projectName: project.attributes?.name || project.id
+                        _projectName: projectName
                     }));
 
                     return {
                         projectId,
-                        projectName: project.attributes?.name || project.id,
+                        projectName,
                         issues: issuesWithProject,
                         count: issuesWithProject.length
                     };
                 } catch (error: any) {
                     // Continue processing other projects even if one fails
+                    const projectName = project.attributes?.name || (project as any).name || "Unknown";
+                    const projectId = extractProjectGuid(project) || project.id || "Unknown";
                     const errorMessage = error?.message || error?.toString() || "Unknown error";
+                    
+                    // Incluir detalhes do erro para debugging
+                    let detailedError = errorMessage;
+                    if (error?.response?.data || error?.response?.status) {
+                        try {
+                            const errorData = error.response.data || {};
+                            detailedError = JSON.stringify({
+                                message: errorMessage,
+                                status: error.response.status,
+                                errorData,
+                                projectId,
+                                projectName
+                            });
+                        } catch {
+                            detailedError = errorMessage;
+                        }
+                    }
+                    
                     return {
-                        projectId: project.id,
-                        projectName: project.attributes?.name || project.id,
+                        projectId,
+                        projectName,
                         issues: [],
                         count: 0,
-                        error: errorMessage
+                        error: detailedError
                     };
                 }
             });
