@@ -157,9 +157,41 @@ As tools de leitura usam os SDKs oficiais da APS (`@aps_sdk/construction-issues`
 ## 🎯 Próximos Passos (Opcional)
 
 1. ✅ ~~Refatorar todas as tools admin para usar as novas funções helper~~ - CONCLUÍDO
-2. Adicionar logging estruturado (opcional)
-3. Implementar métricas de performance (opcional)
-4. Adicionar retry para GET requests usando SDKs (se necessário)
+2. ✅ ~~Adicionar logging estruturado~~ - CONCLUÍDO
+3. ✅ ~~Implementar métricas de performance~~ - CONCLUÍDO
+4. ✅ ~~Adicionar retry para GET requests usando SDKs~~ - CONCLUÍDO
+
+## ✅ Otimizações Complementares Implementadas
+
+### ✅ Logging Estruturado
+- ✅ Sistema de logging com níveis (DEBUG, INFO, WARN, ERROR)
+- ✅ Logs em formato JSON estruturado
+- ✅ Configurável via `LOG_LEVEL` env variable
+- ✅ Integrado em `common.ts` (getAccessToken, fetchWithTimeout)
+- ✅ Arquivo: `aps-mcp-server/src/utils/logger.ts`
+
+### ✅ Métricas de Performance
+- ✅ Medição de tempo de execução (timing)
+- ✅ Contadores de sucesso/erro
+- ✅ Estatísticas agregadas (avg, min, max, p50, p95, p99)
+- ✅ Métricas de cache hit/miss
+- ✅ Limite de 1000 métricas em memória
+- ✅ Arquivo: `aps-mcp-server/src/utils/metrics.ts`
+
+### ✅ Retry para SDKs
+- ✅ Wrapper `withSdkRetry()` para operações de leitura
+- ✅ Wrapper `withSdkLogging()` para operações de escrita
+- ✅ Retry automático com exponential backoff
+- ✅ Apenas para erros retryable (429, 500-504, timeout, rede)
+- ✅ Máximo de 3 tentativas (configurável)
+- ✅ Integrado com logging e métricas
+- ✅ Arquivo: `aps-mcp-server/src/utils/sdk-wrapper.ts`
+
+### 🔄 Integração
+- ✅ `getAccessToken()` - mede tempo e registra cache hit/miss
+- ✅ `getCachedClientCredentialsAccessToken()` - mede tempo e registra cache hit/miss
+- ✅ `fetchWithTimeout()` - logs detalhados e métricas de HTTP
+- ✅ Pronto para integração em tools que usam SDKs
 
 ## 📝 Notas de Implementação
 
