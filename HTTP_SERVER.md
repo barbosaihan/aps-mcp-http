@@ -55,7 +55,12 @@ HOST=0.0.0.0
 # Endpoint MCP (padrão: /mcp)
 MCP_ENDPOINT=/mcp
 
+# Ambiente Docker (define que está rodando em container)
+# Quando true, permite comunicação server-to-server entre containers
+DOCKER_ENV=true
+
 # Origens permitidas (separadas por vírgula)
+# Deixe vazio em ambientes Docker para permitir comunicação entre containers
 ALLOWED_ORIGINS=https://example.com,https://app.example.com
 
 # Nível de log (DEBUG, INFO, WARN, ERROR)
@@ -134,24 +139,30 @@ curl -X POST http://localhost:8080/mcp \
 
 ### Validação de Origin
 O servidor valida o header `Origin` para prevenir DNS rebinding attacks:
-- Em desenvolvimento: permite `localhost`, `127.0.0.1`, `[::1]`
-- Em produção: configure `ALLOWED_ORIGINS` com as origens permitidas
+- **Ambientes containerizados (Docker)**: Permite requisições sem Origin header para facilitar comunicação server-to-server entre containers
+- **Desenvolvimento**: Permite `localhost`, `127.0.0.1`, `[::1]` e qualquer origem
+- **Produção não-containerizada**: Valida apenas localhost ou origens em `ALLOWED_ORIGINS`
+
+### Comunicação entre Containers Docker
+Quando o servidor MCP e clientes (como n8n) estão em containers Docker separados:
+- ✅ Requisições **sem Origin header** são permitidas (comum em server-to-server)
+- ✅ Use o **nome do serviço/container** como hostname: `http://nome-container:porta/mcp`
+- ✅ Ambos os containers devem estar na **mesma rede Docker**
 
 ### Recomendações de Produção
-1. **Bind apenas para localhost** em produção:
-   ```bash
-   HOST=127.0.0.1
-   ```
+1. **Em containers Docker**: 
+   - Configure `ALLOWED_ORIGINS` apenas se precisar de validação estrita
+   - A validação é mais permissiva por padrão para facilitar comunicação entre containers
 
-2. **Configure origens permitidas**:
-   ```bash
-   ALLOWED_ORIGINS=https://your-domain.com
-   ```
+2. **Em produção não-containerizada**:
+   - Bind apenas para localhost: `HOST=127.0.0.1`
+   - Configure origens permitidas: `ALLOWED_ORIGINS=https://your-domain.com`
 
 3. **Use reverse proxy** (nginx, traefik) para:
    - HTTPS/TLS
    - Rate limiting
    - Autenticação adicional
+   - Isolamento de rede
 
 ## 📊 Comparação com mcp-proxy
 

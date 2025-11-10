@@ -77,27 +77,77 @@ class MCPHttpServer {
 
     /**
      * Valida o header Origin para prevenir DNS rebinding attacks
+     * 
+     * Em ambientes containerizados (Docker), permite comunicação server-to-server
+     * entre containers, que geralmente não enviam Origin header.
      */
     private validateOrigin(req: http.IncomingMessage): boolean {
         const origin = req.headers.origin;
+        
+        // Permitir requisições sem Origin header (comum em server-to-server, containers Docker)
+        // Isso é necessário para comunicação entre containers (n8n -> MCP server)
         if (!origin) {
-            // Se não há Origin header, pode ser uma requisição direta (permitir em desenvolvimento)
-            // Em produção, você pode querer rejeitar
+            logger.debug("Request without Origin header - allowing (server-to-server)", {
+                url: req.url,
+                method: req.method,
+            });
             return true;
         }
 
-        // Se há origens permitidas configuradas, validar
+        // Se há origens permitidas configuradas explicitamente, validar estritamente
         if (this.allowedOrigins.size > 0) {
-            return this.allowedOrigins.has(origin);
+            const isValid = this.allowedOrigins.has(origin);
+            if (!isValid) {
+                logger.warn("Request rejected - Origin not in allowed list", {
+                    origin,
+                    allowedOrigins: Array.from(this.allowedOrigins),
+                    url: req.url,
+                });
+            }
+            return isValid;
         }
 
-        // Se não há origens configuradas, permitir localhost para desenvolvimento
+        // Se não há origens configuradas, verificar o ambiente
+        // Verificar se estamos em ambiente Docker/containerizado
+        const isContainerized = process.env.DOCKER_ENV === "true" || 
+                                process.env.KUBERNETES_SERVICE_HOST !== undefined;
+
+        if (isContainerized) {
+            // Em ambiente containerizado (Docker/Kubernetes), permitir qualquer origem
+            // Isso é necessário para comunicação entre containers (n8n -> MCP server)
+            // que podem não enviar Origin header ou enviar Origins diferentes
+            logger.debug("Request from containerized environment - allowing", {
+                origin,
+                url: req.url,
+                dockerEnv: process.env.DOCKER_ENV,
+            });
+            return true;
+        }
+
+        // Em ambiente não-containerizado, validar apenas localhost para segurança
+        // Isso previne DNS rebinding attacks em ambientes locais
         try {
             const originUrl = new URL(origin);
-            return originUrl.hostname === "localhost" || 
-                   originUrl.hostname === "127.0.0.1" ||
-                   originUrl.hostname === "[::1]";
-        } catch {
+            const isValid = originUrl.hostname === "localhost" || 
+                           originUrl.hostname === "127.0.0.1" ||
+                           originUrl.hostname === "[::1]";
+            
+            if (!isValid) {
+                logger.warn("Request rejected - Origin not localhost", {
+                    origin,
+                    hostname: originUrl.hostname,
+                    url: req.url,
+                    hint: "Configure ALLOWED_ORIGINS or set DOCKER_ENV=true for containerized environments",
+                });
+            }
+            
+            return isValid;
+        } catch (error) {
+            logger.warn("Request rejected - Invalid Origin URL format", {
+                origin,
+                url: req.url,
+                error: error instanceof Error ? error.message : String(error),
+            });
             return false;
         }
     }

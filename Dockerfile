@@ -50,6 +50,8 @@ EXPOSE 8080
 ENV PORT=8080
 ENV HOST=0.0.0.0
 ENV MCP_ENDPOINT=/mcp
+ENV DOCKER_ENV=true
+ENV NODE_ENV=production
 
 # Comando final para iniciar o servidor HTTP nativo (Streamable HTTP)
 CMD ["node", "/app/aps-mcp-server/build/http-server-main.js"]
