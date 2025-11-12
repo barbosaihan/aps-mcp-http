@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, extractProjectGuid, cleanProjectId, isValidGuid } from "./common.js";
+import { getAccessToken, getCachedClientCredentialsAccessToken, extractProjectGuid, cleanProjectId, isValidGuid } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -17,8 +17,39 @@ export const getAllIssues: Tool<typeof schema> = {
     callback: async ({ accountId, status, limit = 100 }) => {
         try {
             const accessToken = await getAccessToken(["data:read"]);
+            const accountReadToken = await getCachedClientCredentialsAccessToken(["account:read"]);
             const dataManagementClient = new DataManagementClient();
             const issuesClient = new IssuesClient();
+
+            // Step 0: Get all users to map IDs to names
+            const userMap = new Map<string, string>();
+            try {
+                const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
+                const usersUrl = `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/users`;
+                const usersResponse = await fetch(usersUrl, {
+                    headers: {
+                        "Authorization": `Bearer ${accountReadToken}`
+                    }
+                });
+                
+                if (usersResponse.ok) {
+                    const usersData = await usersResponse.json();
+                    const users = usersData.results || usersData.data || usersData.users || (Array.isArray(usersData) ? usersData : []);
+                    
+                    if (Array.isArray(users)) {
+                        for (const user of users) {
+                            const userId = user.id || user.userId;
+                            const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Unknown";
+                            if (userId) {
+                                userMap.set(userId, userName);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // Se falhar ao buscar usuários, continua sem o mapeamento
+                console.warn("Failed to fetch users for name mapping:", error);
+            }
 
             // Step 1: Get all projects
             const projects = await dataManagementClient.getHubProjects(accountId, { accessToken });
@@ -105,12 +136,33 @@ export const getAllIssues: Tool<typeof schema> = {
                         results = results.slice(0, limit);
                     }
 
-                    // Add project info to each issue
-                    const issuesWithProject = (results || []).map((issue: any) => ({
-                        ...issue,
-                        _projectId: projectId,
-                        _projectName: projectName
-                    }));
+                    // Add project info to each issue and resolve assignedTo to user name
+                    const issuesWithProject = (results || []).map((issue: any) => {
+                        const issueCopy = { ...issue };
+                        
+                        // Resolve assignedTo ID to user name
+                        if (issueCopy.assignedTo) {
+                            const userName = userMap.get(issueCopy.assignedTo);
+                            if (userName) {
+                                issueCopy.assignedToName = userName;
+                            }
+                        }
+                        
+                        // Also check for assignedTo in nested attributes
+                        if (issueCopy.attributes?.assignedTo) {
+                            const userName = userMap.get(issueCopy.attributes.assignedTo);
+                            if (userName) {
+                                if (!issueCopy.attributes) issueCopy.attributes = {};
+                                issueCopy.attributes.assignedToName = userName;
+                            }
+                        }
+                        
+                        return {
+                            ...issueCopy,
+                            _projectId: projectId,
+                            _projectName: projectName
+                        };
+                    });
 
                     return {
                         projectId,
