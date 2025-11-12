@@ -27,42 +27,22 @@ export const adminGetAccountUsers: Tool<typeof schema> = {
                 throw new Error("accountId is required and cannot be empty");
             }
             
-            // Try the Admin API endpoint with accountId in the path first
-            // Some versions of the API require accountId in the path
-            let url = `https://developer.api.autodesk.com/admin/v1/accounts/${accountIdClean}/users`;
+            // Use the correct Admin API endpoint with accountId as query parameter
+            const url = `https://developer.api.autodesk.com/admin/v1/users`;
             
             const params = new URLSearchParams();
+            params.append("accountId", accountIdClean);
             if (companyId) params.append("companyId", companyId);
             if (roleId) params.append("roleId", roleId);
             if (status) params.append("status", status);
             
-            if (params.toString()) {
-                url += `?${params.toString()}`;
-            }
+            const fullUrl = `${url}?${params.toString()}`;
             
-            let response = await fetch(url, {
+            const response = await fetch(fullUrl, {
                 headers: {
                     "Authorization": `Bearer ${accessToken}`
                 }
             });
-            
-            // If path-based endpoint fails, try query parameter approach
-            if (!response.ok && response.status === 404) {
-                url = `https://developer.api.autodesk.com/admin/v1/users`;
-                const queryParams = new URLSearchParams();
-                queryParams.append("accountId", accountIdClean);
-                if (companyId) queryParams.append("companyId", companyId);
-                if (roleId) queryParams.append("roleId", roleId);
-                if (status) queryParams.append("status", status);
-                
-                url += `?${queryParams.toString()}`;
-                
-                response = await fetch(url, {
-                    headers: {
-                        "Authorization": `Bearer ${accessToken}`
-                    }
-                });
-            }
             
             if (!response.ok) {
                 const errorText = await response.text();
@@ -80,7 +60,7 @@ export const adminGetAccountUsers: Tool<typeof schema> = {
                     message: errorMessage,
                     accountId: accountIdClean,
                     statusCode: response.status,
-                    url: url
+                    url: fullUrl
                 }));
             }
         
