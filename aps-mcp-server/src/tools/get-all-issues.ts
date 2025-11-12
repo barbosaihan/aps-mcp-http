@@ -22,7 +22,14 @@ export const getAllIssues: Tool<typeof schema> = {
             const issuesClient = new IssuesClient();
 
             // Step 0: Get all users to map IDs to names
-            const userMap = new Map<string, string>();
+            // Create multiple maps for different ID formats (id, uid, email, project-specific IDs)
+            const userMapById = new Map<string, string>();
+            const userMapByUid = new Map<string, string>();
+            const userMapByEmail = new Map<string, string>();
+            const userMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (userId -> userName)
+            const roleMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (roleGroupId/roleId -> roleName)
+            const companyMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (companyId -> companyName)
+            
             try {
                 const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
                 const usersUrl = `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/users`;
@@ -39,20 +46,36 @@ export const getAllIssues: Tool<typeof schema> = {
                     if (Array.isArray(users)) {
                         for (const user of users) {
                             const userId = user.id || user.userId;
-                            const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Unknown";
+                            const userUid = user.uid;
+                            const userEmail = user.email;
+                            const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || userEmail || "Unknown";
+                            
+                            // Map by ID (GUID)
                             if (userId) {
-                                userMap.set(userId, userName);
+                                userMapById.set(userId, userName);
+                            }
+                            
+                            // Map by UID (alphanumeric like "3NB2QWPLPJNR55VY")
+                            if (userUid) {
+                                userMapByUid.set(String(userUid), userName);
+                            }
+                            
+                            // Map by email (as fallback)
+                            if (userEmail) {
+                                userMapByEmail.set(userEmail, userName);
                             }
                         }
                     }
                 }
             } catch (error) {
-                // Se falhar ao buscar usuários, continua sem o mapeamento
-                console.warn("Failed to fetch users for name mapping:", error);
+                // Se falhar ao buscar usuários da conta, continua sem o mapeamento
+                console.warn("Failed to fetch account users for name mapping:", error);
             }
 
             // Step 1: Get all projects
-            const projects = await dataManagementClient.getHubProjects(accountId, { accessToken });
+            // getHubProjects expects accountId with "b." prefix
+            const accountIdWithPrefix = accountId.startsWith("b.") ? accountId : `b.${accountId}`;
+            const projects = await dataManagementClient.getHubProjects(accountIdWithPrefix, { accessToken });
             if (!projects.data || projects.data.length === 0) {
                 return {
                     content: [{ 
@@ -113,6 +136,96 @@ export const getAllIssues: Tool<typeof schema> = {
                         };
                     }
 
+                    // Get project users, roles, and companies for this specific project
+                    try {
+                        // Get project users (requires account:read permission)
+                        const projectUsersUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/users`;
+                        const projectUsersResponse = await fetch(projectUsersUrl, {
+                            headers: {
+                                "Authorization": `Bearer ${accountReadToken}`
+                            }
+                        });
+                        
+                        if (projectUsersResponse.ok) {
+                            const projectUsersData = await projectUsersResponse.json();
+                            const projectUsers = projectUsersData.results || projectUsersData.data || projectUsersData.users || (Array.isArray(projectUsersData) ? projectUsersData : []);
+                            
+                            if (Array.isArray(projectUsers)) {
+                                const projectUserMap = new Map<string, string>();
+                                const projectRoleMap = new Map<string, string>();
+                                
+                                for (const user of projectUsers) {
+                                    // Map user IDs
+                                    const possibleIds = [
+                                        user.id,
+                                        user.userId,
+                                        user.uid,
+                                        user.autodeskId,
+                                        String(user.id),
+                                        String(user.userId)
+                                    ].filter(Boolean);
+                                    
+                                    const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Unknown";
+                                    
+                                    for (const id of possibleIds) {
+                                        if (id) {
+                                            projectUserMap.set(String(id), userName);
+                                        }
+                                    }
+                                    
+                                    // Map roles from user (roleGroupId and roleId)
+                                    if (user.roles && Array.isArray(user.roles)) {
+                                        for (const role of user.roles) {
+                                            if (role.roleGroupId) {
+                                                projectRoleMap.set(String(role.roleGroupId), role.name || role.roleName || "Unknown Role");
+                                            }
+                                            if (role.id) {
+                                                projectRoleMap.set(String(role.id), role.name || role.roleName || "Unknown Role");
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                if (projectUserMap.size > 0) {
+                                    userMapByProjectId.set(projectId, projectUserMap);
+                                }
+                                if (projectRoleMap.size > 0) {
+                                    roleMapByProjectId.set(projectId, projectRoleMap);
+                                }
+                            }
+                        }
+                        
+                        // Get project companies (requires account:read permission)
+                        const projectCompaniesUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/companies`;
+                        const projectCompaniesResponse = await fetch(projectCompaniesUrl, {
+                            headers: {
+                                "Authorization": `Bearer ${accountReadToken}`
+                            }
+                        });
+                        
+                        if (projectCompaniesResponse.ok) {
+                            const projectCompaniesData = await projectCompaniesResponse.json();
+                            const projectCompanies = projectCompaniesData.results || projectCompaniesData.data || projectCompaniesData.companies || (Array.isArray(projectCompaniesData) ? projectCompaniesData : []);
+                            
+                            if (Array.isArray(projectCompanies)) {
+                                const projectCompanyMap = new Map<string, string>();
+                                for (const company of projectCompanies) {
+                                    const companyId = company.id || company.companyId;
+                                    const companyName = company.name || company.companyName || "Unknown Company";
+                                    if (companyId) {
+                                        projectCompanyMap.set(String(companyId), companyName);
+                                    }
+                                }
+                                
+                                if (projectCompanyMap.size > 0) {
+                                    companyMapByProjectId.set(projectId, projectCompanyMap);
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        // Continue if project data fetch fails
+                    }
+                    
                     const issues = await issuesClient.getIssues(projectId, { accessToken });
                     
                     // Handle different response formats - same logic as get-issues.ts
@@ -138,22 +251,104 @@ export const getAllIssues: Tool<typeof schema> = {
 
                     // Add project info to each issue and resolve assignedTo to user name
                     const issuesWithProject = (results || []).map((issue: any) => {
-                        const issueCopy = { ...issue };
+                        const issueCopy = JSON.parse(JSON.stringify(issue)); // Deep copy
                         
-                        // Resolve assignedTo ID to user name
-                        if (issueCopy.assignedTo) {
-                            const userName = userMap.get(issueCopy.assignedTo);
-                            if (userName) {
-                                issueCopy.assignedToName = userName;
+                        // Helper function to resolve assignedTo to name based on type
+                        const resolveAssignedToName = (assignedTo: any, assignedToType: string | undefined): string | null => {
+                            if (!assignedTo) return null;
+                            
+                            let searchId: string | null = null;
+                            
+                            // If assignedTo is a string, use it directly
+                            if (typeof assignedTo === 'string') {
+                                searchId = assignedTo;
+                            }
+                            // If assignedTo is an object, try to extract ID
+                            else if (typeof assignedTo === 'object') {
+                                searchId = assignedTo.id || assignedTo.uid || assignedTo.email || null;
+                            }
+                            
+                            if (!searchId) return null;
+                            
+                            // Determine type from assignedToType or try to infer
+                            const type = (assignedToType || issueCopy.assignedToType || 'user').toLowerCase();
+                            
+                            // If type is "role", try role maps
+                            if (type === 'role') {
+                                const projectRoleMap = roleMapByProjectId.get(projectId);
+                                if (projectRoleMap && projectRoleMap.has(searchId)) {
+                                    return projectRoleMap.get(searchId)!;
+                                }
+                            }
+                            
+                            // If type is "company", try company maps
+                            if (type === 'company') {
+                                const projectCompanyMap = companyMapByProjectId.get(projectId);
+                                if (projectCompanyMap && projectCompanyMap.has(searchId)) {
+                                    return projectCompanyMap.get(searchId)!;
+                                }
+                            }
+                            
+                            // If type is "user" or unknown, try user maps
+                            // First, try project-specific user map (for project-specific IDs)
+                            const projectUserMap = userMapByProjectId.get(projectId);
+                            if (projectUserMap && projectUserMap.has(searchId)) {
+                                return projectUserMap.get(searchId)!;
+                            }
+                            
+                            // Try lookup by GUID (id)
+                            if (userMapById.has(searchId)) {
+                                return userMapById.get(searchId)!;
+                            }
+                            
+                            // Try lookup by UID (alphanumeric)
+                            if (userMapByUid.has(searchId)) {
+                                return userMapByUid.get(searchId)!;
+                            }
+                            
+                            // Try lookup by email
+                            if (userMapByEmail.has(searchId)) {
+                                return userMapByEmail.get(searchId)!;
+                            }
+                            
+                            // If still not found and no type specified, try role as fallback (for IDs like "622000276")
+                            if (!assignedToType) {
+                                const projectRoleMap = roleMapByProjectId.get(projectId);
+                                if (projectRoleMap && projectRoleMap.has(searchId)) {
+                                    return projectRoleMap.get(searchId)!;
+                                }
+                            }
+                            
+                            return null;
+                        };
+                        
+                        // Check multiple possible locations for assignedTo
+                        const assignedTo = issueCopy.assignedTo || issueCopy.attributes?.assignedTo || issueCopy.relationships?.assignedTo?.data?.id || issueCopy.assignedToId;
+                        const assignedToType = issueCopy.assignedToType || issueCopy.attributes?.assignedToType;
+                        
+                        // Resolve assignedTo to name based on type (user, role, or company)
+                        const resolvedName = resolveAssignedToName(assignedTo, assignedToType);
+                        
+                        // If we found a name, add it to the issue
+                        if (resolvedName) {
+                            // Add assignedToName field
+                            issueCopy.assignedToName = resolvedName;
+                            
+                            // Also add to attributes if it exists
+                            if (issueCopy.attributes) {
+                                issueCopy.attributes.assignedToName = resolvedName;
+                            } else if (assignedTo) {
+                                issueCopy.attributes = { ...issueCopy.attributes, assignedToName: resolvedName };
                             }
                         }
                         
-                        // Also check for assignedTo in nested attributes
-                        if (issueCopy.attributes?.assignedTo) {
-                            const userName = userMap.get(issueCopy.attributes.assignedTo);
-                            if (userName) {
-                                if (!issueCopy.attributes) issueCopy.attributes = {};
-                                issueCopy.attributes.assignedToName = userName;
+                        // Add issue URL for direct access
+                        const issueId = issueCopy.id || issueCopy.displayId || issueCopy.issueId;
+                        if (issueId && projectId) {
+                            issueCopy.issueUrl = `https://acc.autodesk.com/projects/${projectId}/issues/${issueId}`;
+                            // Also add to attributes if it exists
+                            if (issueCopy.attributes) {
+                                issueCopy.attributes.issueUrl = issueCopy.issueUrl;
                             }
                         }
                         
