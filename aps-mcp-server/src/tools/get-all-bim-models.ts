@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, cleanAccountId } from "./common.js";
+import { getAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -251,13 +251,56 @@ export const getAllBimModels: Tool<typeof schema> = {
             const accessToken = await getAccessToken(["data:read", "account:read"]);
             const dataManagementClient = new DataManagementClient();
             
-            // Limpar accountId
+            // Validar accountId
+            if (!accountId || accountId.trim() === '') {
+                throw new Error("accountId é obrigatório e não pode estar vazio");
+            }
+
+            // Para getHubProjects, o accountId deve ter o prefixo "b." ou ser URN
+            // Se não tiver prefixo, vamos tentar com e sem
+            let accountIdForHub = accountId;
+            if (!accountId.startsWith('b.') && !accountId.startsWith('urn:')) {
+                // Tentar com prefixo "b." primeiro
+                accountIdForHub = `b.${accountId}`;
+            }
+            
+            // Para Admin API, precisamos do accountId sem prefixo
             const accountIdClean = cleanAccountId(accountId);
             
-            // 1. Listar todos os projetos da conta
-            const projects = await dataManagementClient.getHubProjects(accountIdClean, { accessToken });
+            // 1. Listar todos os projetos da conta usando Admin API (mais confiável)
+            let projects: any[] = [];
+            try {
+                const url = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
+                const response = await fetchWithTimeout(url, {
+                    method: 'GET',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`
+                    }
+                }, 30000, 2);
+
+                if (!response.ok) {
+                    throw await handleApiError(response, { operation: "list projects", accountId: accountIdClean });
+                }
+
+                const data = await response.json() as any;
+                projects = data.results || data.data || data.projects || (Array.isArray(data) ? data : []);
+            } catch (adminError: any) {
+                // Se Admin API falhar, tentar usar Data Management API
+                console.warn(`Admin API failed, trying Data Management API: ${adminError.message}`);
+                try {
+                    const hubProjects = await dataManagementClient.getHubProjects(accountIdForHub, { accessToken });
+                    if (hubProjects.data) {
+                        projects = hubProjects.data.map((p: any) => ({
+                            id: p.id,
+                            name: p.attributes?.name || p.name
+                        }));
+                    }
+                } catch (dmError: any) {
+                    throw new Error(`Não foi possível listar projetos. Admin API: ${adminError.message}. Data Management API: ${dmError.message}`);
+                }
+            }
             
-            if (!projects.data || projects.data.length === 0) {
+            if (!projects || projects.length === 0) {
                 return {
                     content: [{
                         type: "text" as const,
@@ -269,13 +312,20 @@ export const getAllBimModels: Tool<typeof schema> = {
             const allModels: any[] = [];
 
             // 2. Para cada projeto, buscar modelos BIM
-            for (const project of projects.data) {
-                const projectId = project.id;
-                const projectName = project.attributes?.name || projectId;
+            for (const project of projects) {
+                const projectId = project.id?.replace(/^b\./, '') || project.id;
+                const projectName = project.name || project.attributes?.name || projectId;
 
                 try {
+                    // Para getProjectTopFolders, precisamos do accountId com prefixo "b." ou URN
+                    // E o projectId pode precisar ter o prefixo "b." também
+                    let projectIdForDM = projectId;
+                    if (!projectId.startsWith('b.') && !projectId.startsWith('urn:')) {
+                        projectIdForDM = `b.${projectId}`;
+                    }
+
                     // Buscar pastas principais do projeto
-                    const topFolders = await dataManagementClient.getProjectTopFolders(accountIdClean, projectId, { accessToken });
+                    const topFolders = await dataManagementClient.getProjectTopFolders(accountIdForHub, projectIdForDM, { accessToken });
                     
                     if (topFolders.data) {
                         // Processar cada pasta principal
@@ -283,7 +333,7 @@ export const getAllBimModels: Tool<typeof schema> = {
                             if (folder.type === 'folders' && folder.id) {
                                 await searchFilesInFolder(
                                     dataManagementClient,
-                                    projectId,
+                                    projectIdForDM,
                                     folder.id,
                                     accessToken,
                                     allModels,
