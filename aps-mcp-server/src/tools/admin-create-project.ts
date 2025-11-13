@@ -20,8 +20,44 @@ export const adminCreateProject: Tool<typeof schema> = {
     schema,
     callback: async ({ accountId, name, type, serviceTypes, templateId, region }: SchemaType) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
             const accountIdClean = cleanAccountId(accountId);
+            
+            // Primeiro, validar o token tentando listar projetos (requer apenas account:read)
+            // Isso ajuda a identificar se o problema é de autenticação ou permissões
+            try {
+                const readToken = await getCachedClientCredentialsAccessToken(["account:read"]);
+                const testUrl = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
+                const testResponse = await fetchWithTimeout(testUrl, {
+                    method: "GET",
+                    headers: {
+                        "Authorization": `Bearer ${readToken}`,
+                        "Content-Type": "application/json"
+                    }
+                }, 30000, 0);
+                
+                if (!testResponse.ok && testResponse.status === 401) {
+                    throw new Error(JSON.stringify({
+                        error: "Authentication failed",
+                        message: "Não foi possível autenticar com a API. Verifique se APS_CLIENT_ID e APS_CLIENT_SECRET estão corretos.",
+                        statusCode: 401,
+                        accountId: accountIdClean,
+                        diagnostic: "Falha ao validar token com account:read - credenciais podem estar inválidas"
+                    }));
+                }
+            } catch (testError: any) {
+                // Se o erro já está formatado, re-lançar
+                if (testError instanceof Error && testError.message.startsWith("{")) {
+                    try {
+                        JSON.parse(testError.message);
+                        throw testError;
+                    } catch {
+                        // Continuar com o fluxo normal
+                    }
+                }
+            }
+            
+            // Agora obter token com account:write para criar o projeto
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
             const url = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
             
             const projectData: any = {
@@ -43,7 +79,33 @@ export const adminCreateProject: Tool<typeof schema> = {
             }, 30000, 0); // Sem retry para POST
             
             if (!response.ok) {
-                throw await handleApiError(response, { operation: "create project", accountId: accountIdClean });
+                const errorResponse = await handleApiError(response, { operation: "create project", accountId: accountIdClean });
+                const errorMessage = errorResponse.message;
+                
+                // Se for 401, adicionar informações de diagnóstico adicionais
+                if (response.status === 401) {
+                    throw new Error(JSON.stringify({
+                        error: "Failed to create project",
+                        message: errorMessage,
+                        statusCode: 401,
+                        accountId: accountIdClean,
+                        diagnostic: "Token foi gerado com sucesso, mas a API rejeitou a requisição. Possíveis causas:",
+                        possibleCauses: [
+                            "A aplicação não está registrada como 'Custom Integration' no Autodesk Construction Cloud",
+                            "A aplicação não tem permissão para acessar a conta especificada",
+                            "O scope 'account:write' não está habilitado para esta aplicação",
+                            "A aplicação não tem permissões de administrador na conta"
+                        ],
+                        troubleshooting: [
+                            "Verifique no portal ACC se a aplicação está registrada como Custom Integration",
+                            "Verifique se o APS_CLIENT_ID está associado à conta no ACC",
+                            "Verifique se a aplicação tem permissões de administrador",
+                            "Confirme que o scope 'account:write' está habilitado na configuração da aplicação APS"
+                        ]
+                    }));
+                }
+                
+                throw errorResponse;
             }
             
             const project = await response.json() as any;
