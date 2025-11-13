@@ -98,18 +98,18 @@ async function searchFilesInFolder(
                                 if (storageData) {
                                     modelInfo.storageId = storageData.id;
                                     modelInfo.storageType = storageData.type;
-                                    // URN pode estar no storage ID ou em relationships
-                                    if (storageData.id && storageData.id.startsWith('urn:')) {
-                                        modelInfo.urn = storageData.id;
-                                    }
                                 }
 
-                                // Verificar em derivatives para obter URN
-                                const derivativesData = version.relationships?.derivatives?.data;
-                                if (derivativesData && derivativesData.id) {
-                                    if (!modelInfo.urn && derivativesData.id.startsWith('urn:')) {
-                                        modelInfo.urn = derivativesData.id;
-                                    }
+                                // IMPORTANTE: O APS Viewer precisa do URN do modelo CONVERTIDO (derivatives)
+                                // Não usar o URN do storage, pois esse é apenas para download
+                                // O URN de derivatives é o resultado da conversão do modelo para visualização
+                                const derivativesDataForUrn = version.relationships?.derivatives?.data;
+                                if (derivativesDataForUrn && derivativesDataForUrn.id && derivativesDataForUrn.id.startsWith('urn:')) {
+                                    // Priorizar URN de derivatives (modelo convertido)
+                                    modelInfo.urn = derivativesDataForUrn.id;
+                                } else if (storageData && storageData.id && storageData.id.startsWith('urn:')) {
+                                    // Fallback para storage URN (pode não funcionar no viewer, mas é melhor que nada)
+                                    modelInfo.urn = storageData.id;
                                 }
 
                                 // Tentar obter tamanho do arquivo - verificar múltiplas fontes
@@ -147,32 +147,37 @@ async function searchFilesInFolder(
                                 }
 
                                 // Construir links úteis
+                                // Limpar projectId para o link do ACC (remover prefixo "b." se presente)
+                                const cleanProjectIdForLink = projectId.replace(/^b\./, '');
                                 const links: any = {
-                                    viewInACC: `https://acc.autodesk.com/projects/${projectId}/folders/${folderId}/items/${item.id}`,
+                                    viewInACC: `https://acc.autodesk.com/projects/${cleanProjectIdForLink}/folders/${folderId}/items/${item.id}`,
                                     itemId: item.id,
                                     versionId: version.id
                                 };
 
-                                // Se tiver URN, adicionar link para visualização no Viewer
-                                // NOTA: O APS Viewer requer que o arquivo seja convertido primeiro
-                                // Se não houver URN convertido, usamos o link do ACC como fallback
-                                if (modelInfo.urn && modelInfo.urn.startsWith('urn:')) {
-                                    // Codificar URN para URL (base64url) - o URN já é uma string
+                                // Gerar link para visualização no APS Viewer
+                                // IMPORTANTE: O APS Viewer só funciona com modelos CONVERTIDOS
+                                // O URN deve ser do derivatives (modelo convertido), não do storage
+                                const derivativesDataForViewer = version.relationships?.derivatives?.data;
+                                const convertedUrn = derivativesDataForViewer?.id;
+                                const hasConvertedUrn = convertedUrn && convertedUrn.startsWith('urn:');
+                                
+                                if (hasConvertedUrn && convertedUrn) {
+                                    // Modelo convertido - usar URN de derivatives para APS Viewer
                                     try {
-                                        // Converter URN string para base64
-                                        const urnBase64 = Buffer.from(modelInfo.urn, 'utf8').toString('base64')
+                                        // Codificar URN para base64url (formato requerido pelo APS Viewer)
+                                        const urnBase64 = Buffer.from(convertedUrn, 'utf8').toString('base64')
                                             .replace(/\+/g, '-')  // Substituir + por -
                                             .replace(/\//g, '_')  // Substituir / por _
                                             .replace(/=/g, '');   // Remover padding =
                                         links.viewerUrl = `https://aps.autodesk.com/viewer?urn=${urnBase64}`;
                                     } catch (e) {
                                         // Se falhar a codificação, usar link do ACC como fallback
-                                        // Usar link do ACC como fallback
                                         links.viewerUrl = links.viewInACC || '';
                                     }
                                 } else {
-                                    // Se não tiver URN, usar link do ACC para visualização
-                                    // O ACC permite visualizar arquivos mesmo sem conversão
+                                    // Modelo NÃO convertido - usar link do ACC
+                                    // O ACC permite visualizar arquivos mesmo sem conversão para APS Viewer
                                     links.viewerUrl = links.viewInACC || '';
                                 }
 
