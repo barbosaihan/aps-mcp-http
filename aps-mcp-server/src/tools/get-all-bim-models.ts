@@ -32,8 +32,13 @@ async function searchFilesInFolder(
     folderId: string,
     accessToken: string,
     models: any[],
-    projectName: string
+    projectName: string,
+    maxModels: number = 1000  // Limite máximo de modelos para evitar loops infinitos
 ): Promise<void> {
+    // Se já atingiu o limite, parar a busca
+    if (models.length >= maxModels) {
+        return;
+    }
     try {
         // Buscar conteúdo da pasta
         const contents = await dataManagementClient.getFolderContents(projectId, folderId, { accessToken });
@@ -45,10 +50,13 @@ async function searchFilesInFolder(
         // Processar cada item na pasta
         for (const item of contents.data) {
             if (item.type === 'folders') {
-                // Se for uma pasta, buscar recursivamente
+                // Se for uma pasta, buscar recursivamente (apenas se não atingiu o limite)
+                if (models.length >= maxModels) {
+                    return;
+                }
                 const subFolderId = item.id;
                 if (subFolderId) {
-                    await searchFilesInFolder(dataManagementClient, projectId, subFolderId, accessToken, models, projectName);
+                    await searchFilesInFolder(dataManagementClient, projectId, subFolderId, accessToken, models, projectName, maxModels);
                 }
             } else if (item.type === 'items') {
                 // Se for um item (arquivo), verificar se é um modelo BIM
@@ -66,6 +74,8 @@ async function searchFilesInFolder(
                                 const versionAttributes = version.attributes || {};
                                 const storageData = version.relationships?.storage?.data;
                                 const versionData = version as any; // Usar any para acessar propriedades que podem não estar tipadas
+                                
+                                // Log removido para melhorar performance
                                 
                                 // Extrair informações do modelo
                                 const modelInfo: any = {
@@ -102,30 +112,38 @@ async function searchFilesInFolder(
                                     }
                                 }
 
-                                // Tentar obter tamanho do arquivo de versionData (pode estar em diferentes lugares)
-                                // O tamanho do arquivo pode estar em version.attributes.storage.size
-                                // ou pode precisar fazer uma chamada adicional para obter detalhes do storage
-                                if (versionData.attributes?.storage) {
-                                    modelInfo.fileSize = versionData.attributes.storage.size || 0;
-                                    modelInfo.storageLocation = versionData.attributes.storage.location || '';
-                                } else if (storageData) {
-                                    // Tentar obter tamanho do storage data diretamente
-                                    // O storage pode ter size como atributo
-                                    modelInfo.fileSize = (storageData as any).size || (versionAttributes as any).size || 0;
-                                    modelInfo.storageLocation = (storageData as any).location || '';
-                                } else if (versionAttributes) {
-                                    // Tentar obter de versionAttributes diretamente
-                                    modelInfo.fileSize = (versionAttributes as any).size || (versionAttributes as any).fileSize || 0;
+                                // Tentar obter tamanho do arquivo - verificar múltiplas fontes
+                                // A API Data Management retorna o tamanho em version.attributes.storageSize (mais comum)
+                                // 1. version.attributes.storageSize (campo mais comum na API)
+                                if (versionAttributes && (versionAttributes as any).storageSize) {
+                                    modelInfo.fileSize = (versionAttributes as any).storageSize;
                                 }
-                                
-                                // Se ainda não tiver fileSize, tentar obter de item.attributes
-                                if (!modelInfo.fileSize || modelInfo.fileSize === 0) {
+                                // 2. version.attributes.storage.size (formato alternativo)
+                                else if (versionData.attributes?.storage?.size) {
+                                    modelInfo.fileSize = versionData.attributes.storage.size;
+                                    modelInfo.storageLocation = versionData.attributes.storage.location || '';
+                                }
+                                // 3. version.attributes.size (formato alternativo)
+                                else if (versionAttributes && (versionAttributes as any).size) {
+                                    modelInfo.fileSize = (versionAttributes as any).size;
+                                }
+                                // 4. storageData.size (pode estar no objeto storage)
+                                else if (storageData && (storageData as any).size) {
+                                    modelInfo.fileSize = (storageData as any).size;
+                                    modelInfo.storageLocation = (storageData as any).location || '';
+                                }
+                                // 5. item.attributes.size (última tentativa)
+                                else if (item.attributes) {
                                     const itemAttributes = item.attributes as any;
                                     if (itemAttributes?.size) {
                                         modelInfo.fileSize = itemAttributes.size;
                                     } else if (itemAttributes?.fileSize) {
                                         modelInfo.fileSize = itemAttributes.fileSize;
+                                    } else {
+                                        modelInfo.fileSize = 0;
                                     }
+                                } else {
+                                    modelInfo.fileSize = 0;
                                 }
 
                                 // Construir links úteis
@@ -149,7 +167,6 @@ async function searchFilesInFolder(
                                         links.viewerUrl = `https://aps.autodesk.com/viewer?urn=${urnBase64}`;
                                     } catch (e) {
                                         // Se falhar a codificação, usar link do ACC como fallback
-                                        console.warn(`Erro ao codificar URN ${modelInfo.urn}:`, e);
                                         // Usar link do ACC como fallback
                                         links.viewerUrl = links.viewInACC || '';
                                     }
@@ -356,13 +373,15 @@ export const getAllBimModels: Tool<typeof schema> = {
                         // Processar cada pasta principal
                         for (const folder of topFolders.data) {
                             if (folder.type === 'folders' && folder.id) {
+                                // Limitar busca a 1000 modelos por projeto para evitar loops infinitos
                                 await searchFilesInFolder(
                                     dataManagementClient,
                                     projectIdForDM,
                                     folder.id,
                                     accessToken,
                                     allModels,
-                                    projectName
+                                    projectName,
+                                    1000
                                 );
                             }
                         }
