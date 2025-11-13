@@ -103,13 +103,29 @@ async function searchFilesInFolder(
                                 }
 
                                 // Tentar obter tamanho do arquivo de versionData (pode estar em diferentes lugares)
+                                // O tamanho do arquivo pode estar em version.attributes.storage.size
+                                // ou pode precisar fazer uma chamada adicional para obter detalhes do storage
                                 if (versionData.attributes?.storage) {
                                     modelInfo.fileSize = versionData.attributes.storage.size || 0;
                                     modelInfo.storageLocation = versionData.attributes.storage.location || '';
                                 } else if (storageData) {
-                                    // Tentar obter tamanho do storage data
-                                    modelInfo.fileSize = (storageData as any).size || 0;
+                                    // Tentar obter tamanho do storage data diretamente
+                                    // O storage pode ter size como atributo
+                                    modelInfo.fileSize = (storageData as any).size || (versionAttributes as any).size || 0;
                                     modelInfo.storageLocation = (storageData as any).location || '';
+                                } else if (versionAttributes) {
+                                    // Tentar obter de versionAttributes diretamente
+                                    modelInfo.fileSize = (versionAttributes as any).size || (versionAttributes as any).fileSize || 0;
+                                }
+                                
+                                // Se ainda não tiver fileSize, tentar obter de item.attributes
+                                if (!modelInfo.fileSize || modelInfo.fileSize === 0) {
+                                    const itemAttributes = item.attributes as any;
+                                    if (itemAttributes?.size) {
+                                        modelInfo.fileSize = itemAttributes.size;
+                                    } else if (itemAttributes?.fileSize) {
+                                        modelInfo.fileSize = itemAttributes.fileSize;
+                                    }
                                 }
 
                                 // Construir links úteis
@@ -120,18 +136,27 @@ async function searchFilesInFolder(
                                 };
 
                                 // Se tiver URN, adicionar link para visualização no Viewer
-                                if (modelInfo.urn) {
-                                    // Codificar URN para URL (base64url)
+                                // NOTA: O APS Viewer requer que o arquivo seja convertido primeiro
+                                // Se não houver URN convertido, usamos o link do ACC como fallback
+                                if (modelInfo.urn && modelInfo.urn.startsWith('urn:')) {
+                                    // Codificar URN para URL (base64url) - o URN já é uma string
                                     try {
-                                        const urnBase64 = Buffer.from(modelInfo.urn).toString('base64')
-                                            .replace(/\+/g, '-')
-                                            .replace(/\//g, '_')
-                                            .replace(/=/g, '');
+                                        // Converter URN string para base64
+                                        const urnBase64 = Buffer.from(modelInfo.urn, 'utf8').toString('base64')
+                                            .replace(/\+/g, '-')  // Substituir + por -
+                                            .replace(/\//g, '_')  // Substituir / por _
+                                            .replace(/=/g, '');   // Remover padding =
                                         links.viewerUrl = `https://aps.autodesk.com/viewer?urn=${urnBase64}`;
                                     } catch (e) {
-                                        // Se falhar a codificação, usar URN direto
-                                        links.viewerUrl = `https://aps.autodesk.com/viewer?urn=${encodeURIComponent(modelInfo.urn)}`;
+                                        // Se falhar a codificação, usar link do ACC como fallback
+                                        console.warn(`Erro ao codificar URN ${modelInfo.urn}:`, e);
+                                        // Usar link do ACC como fallback
+                                        links.viewerUrl = links.viewInACC || '';
                                     }
+                                } else {
+                                    // Se não tiver URN, usar link do ACC para visualização
+                                    // O ACC permite visualizar arquivos mesmo sem conversão
+                                    links.viewerUrl = links.viewInACC || '';
                                 }
 
                                 // Adicionar link de download se disponível
