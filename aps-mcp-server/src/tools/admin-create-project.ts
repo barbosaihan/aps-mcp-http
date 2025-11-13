@@ -59,12 +59,34 @@ export const adminCreateProject: Tool<typeof schema> = {
                 }]
             };
         } catch (error: any) {
+            // Se o erro já está formatado como JSON, re-lançar
             if (error instanceof Error && error.message.startsWith("{")) {
-                throw error;
+                try {
+                    // Tentar parsear para verificar se é JSON válido
+                    JSON.parse(error.message);
+                    throw error;
+                } catch {
+                    // Não é JSON válido, continuar com o tratamento padrão
+                }
             }
+            
+            // Extrair mensagem do erro
+            let errorMessage = error?.message || error?.toString() || "Unknown error";
+            
+            // Se o erro contém informações de autenticação, destacar isso
+            if (errorMessage.includes("Authentication") || errorMessage.includes("credentials") || errorMessage.includes("401")) {
+                throw new Error(JSON.stringify({
+                    error: "Failed to create project",
+                    message: `Erro de autenticação: ${errorMessage}. Verifique se as credenciais APS_CLIENT_ID e APS_CLIENT_SECRET estão configuradas corretamente no arquivo .env e têm permissões para criar projetos (scope: account:write)`,
+                    statusCode: 401,
+                    accountId: accountId?.replace(/^b\./, "") || "unknown",
+                    hint: "Certifique-se de que a aplicação APS tem acesso à conta e permissões necessárias para criar projetos"
+                }));
+            }
+            
             throw new Error(JSON.stringify({
                 error: "Failed to create project",
-                message: error?.message || error?.toString() || "Unknown error",
+                message: errorMessage,
                 accountId: accountId?.replace(/^b\./, "") || "unknown"
             }));
         }

@@ -201,12 +201,24 @@ export async function handleApiError(response: Response, context: { operation: s
         errorMessage = `Could not ${context.operation} (HTTP ${response.status})`;
     }
     
-    const errorDetails = {
+    const errorDetails: any = {
         error: `Failed to ${context.operation}`,
         message: errorMessage,
         statusCode: response.status,
         ...context
     };
+
+    // Adicionar dicas específicas para erros 401 (não autorizado)
+    if (response.status === 401) {
+        errorDetails.hint = "Erro de autenticação/autorização. Verifique:";
+        errorDetails.suggestions = [
+            "As credenciais APS_CLIENT_ID e APS_CLIENT_SECRET estão configuradas corretamente no arquivo .env",
+            "A aplicação APS tem permissões necessárias (scopes) para executar esta operação",
+            "O token de acesso não expirou ou foi invalidado",
+            "A aplicação está registrada como uma 'Custom Integration' no Autodesk Construction Cloud",
+            "A aplicação tem acesso à conta especificada"
+        ];
+    }
     
     return new Error(JSON.stringify(errorDetails));
 }
@@ -361,27 +373,53 @@ export async function getCachedClientCredentialsAccessToken(scopes: string[]): P
     return measureTiming(
         "auth.getClientCredentialsAccessToken",
         async () => {
+            // Validar que as credenciais estão configuradas
+            if (!APS_CLIENT_ID || !APS_CLIENT_SECRET) {
+                const missingVars = [];
+                if (!APS_CLIENT_ID) missingVars.push("APS_CLIENT_ID");
+                if (!APS_CLIENT_SECRET) missingVars.push("APS_CLIENT_SECRET");
+                throw new Error(JSON.stringify({
+                    error: "Missing credentials",
+                    message: `As seguintes variáveis de ambiente não estão configuradas: ${missingVars.join(", ")}. Por favor, configure-as no arquivo .env`,
+                    statusCode: 401,
+                    missingVariables: missingVars
+                }));
+            }
+
             const cacheKey = scopes.join("+");
             let credentials = clientCredentialsCache.get(cacheKey);
             
             // Verifica se o token está válido (com margem de 1 minuto)
             if (!credentials || credentials.expiresAt < Date.now() + 60000) {
                 logger.debug("Fetching new client credentials token", { scopes });
-                const { access_token, expires_in } = await getClientCredentialsAccessToken(
-                    APS_CLIENT_ID!,
-                    APS_CLIENT_SECRET!,
-                    scopes
-                );
-                credentials = {
-                    accessToken: access_token,
-                    expiresAt: Date.now() + expires_in * 1000
-                };
-                clientCredentialsCache.set(cacheKey, credentials);
-                logger.debug("Client credentials token cached", { 
-                    scopes, 
-                    expiresIn: expires_in 
-                });
-                incrementCounter("auth.tokenCache", { type: "miss", auth: "client-credentials" });
+                try {
+                    const { access_token, expires_in } = await getClientCredentialsAccessToken(
+                        APS_CLIENT_ID,
+                        APS_CLIENT_SECRET,
+                        scopes
+                    );
+                    credentials = {
+                        accessToken: access_token,
+                        expiresAt: Date.now() + expires_in * 1000
+                    };
+                    clientCredentialsCache.set(cacheKey, credentials);
+                    logger.debug("Client credentials token cached", { 
+                        scopes, 
+                        expiresIn: expires_in 
+                    });
+                    incrementCounter("auth.tokenCache", { type: "miss", auth: "client-credentials" });
+                } catch (error: any) {
+                    // Capturar erros de autenticação e fornecer mensagem mais clara
+                    const errorMessage = error?.message || error?.toString() || "Unknown error";
+                    logger.error("Failed to get client credentials token", error, { scopes });
+                    throw new Error(JSON.stringify({
+                        error: "Authentication failed",
+                        message: `Não foi possível obter token de autenticação: ${errorMessage}. Verifique se APS_CLIENT_ID e APS_CLIENT_SECRET estão corretos no arquivo .env`,
+                        statusCode: 401,
+                        originalError: errorMessage,
+                        scopes: scopes
+                    }));
+                }
             } else {
                 incrementCounter("auth.tokenCache", { type: "hit", auth: "client-credentials" });
             }
