@@ -348,20 +348,42 @@ export const getAllBimModels: Tool<typeof schema> = {
                 }
             }
 
-            // 3. Formatar resultados em tabela
-            const tableOutput = formatModelsAsTable(allModels);
+            // 3. Preparar resposta em formato JSON simples para processamento no n8n
+            // Normalizar e limpar os dados antes de retornar
+            const responseData = {
+                total: allModels.length,
+                accountId: accountId,
+                models: allModels.map(model => {
+                    // Normalizar projectId (remover prefixo "b." se presente)
+                    const cleanProjectId = (model.projectId || '').replace(/^b\./, '');
+                    
+                    return {
+                        projectId: cleanProjectId,
+                        projectName: model.projectName || '',
+                        fileName: model.fileName || '',
+                        fileType: model.fileType || '',
+                        itemId: model.itemId || '',
+                        versionId: model.versionId || '',
+                        versionNumber: model.versionNumber || 0,
+                        fileSize: model.fileSize || 0,
+                        fileSizeMB: model.fileSize > 0 ? parseFloat((model.fileSize / 1024 / 1024).toFixed(2)) : 0,
+                        createTime: model.createTime || '',
+                        createUserName: model.createUserName || '',
+                        displayName: model.displayName || model.fileName || '',
+                        urn: model.urn || '',
+                        // Links formatados
+                        viewInACC: model.links?.viewInACC || '',
+                        viewerUrl: model.links?.viewerUrl || '',
+                        downloadUrl: model.links?.downloadUrl || ''
+                    };
+                })
+            };
 
-            // 4. Retornar resultados
+            // 4. Retornar resultados - JSON puro sem markdown para facilitar processamento no n8n
             return {
                 content: [{
                     type: "text" as const,
-                    text: tableOutput
-                }, {
-                    type: "text" as const,
-                    text: JSON.stringify({
-                        total: allModels.length,
-                        models: allModels
-                    }, null, 2)
+                    text: JSON.stringify(responseData)
                 }]
             };
         } catch (error: any) {
