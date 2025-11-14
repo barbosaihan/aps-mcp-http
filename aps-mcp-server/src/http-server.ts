@@ -67,6 +67,8 @@ interface Session {
         codeVerifier: string;
         state: string;
         createdAt: number;
+        redirectUri?: string;
+        scopes?: string[];
     };
 }
 
@@ -261,6 +263,36 @@ class MCPHttpServer {
                 ...corsHeaders
             });
             res.end(JSON.stringify({ status: "ok", version: "0.0.1" }));
+            return;
+        }
+
+        // Monitoring endpoint - retorna estatísticas de sessões
+        if (url.pathname === "/monitoring/sessions" && req.method === "GET") {
+            const corsHeaders = this.getCorsHeaders(req);
+            
+            const now = Date.now();
+            const activeSessions = Array.from(this.sessions.values()).filter(
+                (session) => now - session.lastActivity < 60 * 60 * 1000 // 1 hora
+            );
+            
+            const sessionsWithOAuth2 = activeSessions.filter(
+                (session) => !!session.oauth2
+            );
+            
+            const stats = {
+                totalSessions: this.sessions.size,
+                activeSessions: activeSessions.length,
+                sessionsWithOAuth2: sessionsWithOAuth2.length,
+                sessionsWithoutOAuth2: activeSessions.length - sessionsWithOAuth2.length,
+                activeStreams: this.streams.size,
+                timestamp: new Date().toISOString(),
+            };
+            
+            res.writeHead(200, { 
+                "Content-Type": "application/json",
+                ...corsHeaders
+            });
+            res.end(JSON.stringify(stats));
             return;
         }
 
@@ -1130,14 +1162,7 @@ class MCPHttpServer {
             const codeChallenge = generateCodeChallenge(codeVerifier);
             const state = generateState();
 
-            // 2. Armazenar na sessão
-            session.pkce = {
-                codeVerifier,
-                state,
-                createdAt: Date.now(),
-            };
-
-            // 3. Construir URL de autorização
+            // 2. Construir URL de autorização
             const url = new URL(req.url || "/", `http://${req.headers.host}`);
             const redirectUri =
                 url.searchParams.get("redirect_uri") ||
@@ -1148,7 +1173,16 @@ class MCPHttpServer {
             const scopes =
                 scopesParam?.split(" ") ||
                 APS_OAUTH_SCOPES?.split(" ") ||
-                ["data:read", "data:write"];
+                ["data:read", "data:write", "account:read", "account:write"];
+
+            // 3. Armazenar na sessão (incluindo redirectUri e scopes)
+            session.pkce = {
+                codeVerifier,
+                state,
+                createdAt: Date.now(),
+                redirectUri,
+                scopes, // Armazenar scopes solicitados
+            };
 
             if (!APS_CLIENT_ID) {
                 throw new Error("APS_CLIENT_ID is not configured");
@@ -1252,8 +1286,22 @@ class MCPHttpServer {
             }
 
             // Trocar código por token
-            const redirectUri =
-                APS_OAUTH_REDIRECT_URI || "http://localhost:5173/oauth/callback";
+            // Usar o redirectUri armazenado na sessão PKCE (deve ser o mesmo usado na autorização)
+            // Se não estiver na sessão, usar o redirectUri do parâmetro da URL ou o padrão
+            let redirectUri = session.pkce.redirectUri;
+            
+            if (!redirectUri) {
+                // Fallback: tentar obter da URL ou usar o padrão configurado
+                const url = new URL(req.url || "/", `http://${req.headers.host}`);
+                redirectUri = url.searchParams.get("redirect_uri") || 
+                             APS_OAUTH_REDIRECT_URI || 
+                             "http://localhost:8080/oauth/callback";
+                
+                // Armazenar para uso futuro
+                if (session.pkce) {
+                    session.pkce.redirectUri = redirectUri;
+                }
+            }
 
             if (!APS_CLIENT_ID) {
                 throw new Error("APS_CLIENT_ID is not configured");
@@ -1267,12 +1315,47 @@ class MCPHttpServer {
             );
 
             // Armazenar tokens na sessão
+            // Usar scopes da resposta do token, ou fallback para scopes solicitados na autorização
+            const tokenScopes = tokens.scope?.split(" ").filter(Boolean) || [];
+            const requestedScopes = session.pkce?.scopes || [];
+            
+            logger.info("OAuth2 callback - scopes info", {
+                sessionId: session.id,
+                hasPkce: !!session.pkce,
+                hasPkceScopes: !!session.pkce?.scopes,
+                pkceScopes: session.pkce?.scopes,
+                tokenScopes: tokenScopes,
+                requestedScopes: requestedScopes,
+                tokenScopeString: tokens.scope,
+            });
+            
+            // Se o token não retornou scopes (comum na Autodesk), usar os scopes solicitados
+            const finalScopes = tokenScopes.length > 0 ? tokenScopes : requestedScopes;
+            
+            if (finalScopes.length === 0) {
+                logger.warn("No scopes found in token or PKCE - using default scopes", {
+                    sessionId: session.id,
+                    tokenScopes,
+                    requestedScopes,
+                });
+                // Fallback para scopes padrão
+                finalScopes.push("data:read", "data:write", "account:read", "account:write");
+            }
+            
             session.oauth2 = {
                 accessToken: tokens.access_token,
                 refreshToken: tokens.refresh_token,
                 expiresAt: Date.now() + tokens.expires_in * 1000,
-                scopes: tokens.scope?.split(" ") || [],
+                scopes: finalScopes,
             };
+            
+            logger.info("OAuth2 tokens stored", {
+                sessionId: session.id,
+                scopesFromToken: tokenScopes,
+                scopesFromRequest: requestedScopes,
+                finalScopes,
+                scopesCount: finalScopes.length,
+            });
 
             // Limpar PKCE
             delete session.pkce;

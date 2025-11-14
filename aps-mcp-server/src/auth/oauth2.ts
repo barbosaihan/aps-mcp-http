@@ -77,14 +77,12 @@ export async function exchangeAuthorizationCode(
 
     if (!response.ok) {
         const errorText = await response.text();
-        logger.error("Failed to exchange authorization code", {
-            status: response.status,
+        const errorMessage = `Failed to exchange authorization code: ${response.status} ${response.statusText} - ${errorText}`;
+        logger.error("Failed to exchange authorization code", new Error(errorMessage), {
+            statusCode: response.status,
             statusText: response.statusText,
-            error: errorText,
         });
-        throw new Error(
-            `Failed to exchange authorization code: ${response.status} ${response.statusText} - ${errorText}`
-        );
+        throw new Error(errorMessage);
     }
 
     const tokens = (await response.json()) as OAuth2TokenResponse;
@@ -122,14 +120,12 @@ export async function refreshAccessToken(
 
     if (!response.ok) {
         const errorText = await response.text();
-        logger.error("Failed to refresh access token", {
-            status: response.status,
+        const errorMessage = `Failed to refresh access token: ${response.status} ${response.statusText} - ${errorText}`;
+        logger.error("Failed to refresh access token", new Error(errorMessage), {
+            statusCode: response.status,
             statusText: response.statusText,
-            error: errorText,
         });
-        throw new Error(
-            `Failed to refresh access token: ${response.status} ${response.statusText} - ${errorText}`
-        );
+        throw new Error(errorMessage);
     }
 
     const tokens = (await response.json()) as OAuth2TokenResponse;

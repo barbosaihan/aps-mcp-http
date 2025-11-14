@@ -24,6 +24,8 @@ export type Session = {
         codeVerifier: string;
         state: string;
         createdAt: number;
+        redirectUri?: string;
+        scopes?: string[];
     };
 };
 
@@ -440,8 +442,8 @@ export async function getAccessToken(
                         auth: "oauth2",
                     });
                     return session.oauth2.accessToken;
-                } catch (error) {
-                    logger.error("Failed to refresh OAuth2 token", error, {
+                } catch (error: unknown) {
+                    logger.error("Failed to refresh OAuth2 token", error as Error, {
                         sessionId: session.id,
                     });
                     throw new Error(

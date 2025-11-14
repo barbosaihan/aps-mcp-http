@@ -70,13 +70,6 @@ export const getToken: Tool<typeof schema> = {
                 hasCodeChallenge: !!codeChallenge,
             });
 
-            // 2. Armazenar PKCE na sessão
-            session.pkce = {
-                codeVerifier,
-                state,
-                createdAt: Date.now(),
-            };
-
             // 3. Construir URL de autorização
             const finalRedirectUri =
                 redirectUri ||
@@ -87,7 +80,16 @@ export const getToken: Tool<typeof schema> = {
                 scopes && scopes.length > 0
                     ? scopes
                     : APS_OAUTH_SCOPES?.split(" ") ||
-                      ["data:read", "data:write"];
+                      ["data:read", "data:write", "account:read", "account:write"];
+
+            // 2. Armazenar PKCE na sessão (incluindo redirectUri e scopes)
+            session.pkce = {
+                codeVerifier,
+                state,
+                createdAt: Date.now(),
+                redirectUri: finalRedirectUri,
+                scopes: finalScopes,
+            };
 
             const authUrl = new URL(
                 "https://developer.api.autodesk.com/authentication/v2/authorize"

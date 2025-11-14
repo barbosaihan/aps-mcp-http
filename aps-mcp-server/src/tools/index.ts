@@ -51,3 +51,4 @@ export { getAllBimModels } from "./get-all-bim-models.js";
 export { getOAuthAuthorizationUrl } from "./get-oauth-authorization-url.js";
 export { exchangeOAuthCode } from "./exchange-oauth-code.js";
 export { getToken } from "./get-token.js";
+export { getOAuthTokenInfo } from "./get-oauth-token-info.js";
