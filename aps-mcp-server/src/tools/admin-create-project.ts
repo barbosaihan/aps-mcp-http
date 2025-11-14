@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { logger } from "../utils/logger.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -22,43 +23,24 @@ export const adminCreateProject: Tool<typeof schema> = {
         try {
             const accountIdClean = cleanAccountId(accountId);
             
-            // Primeiro, validar o token tentando listar projetos (requer apenas account:read)
-            // Isso ajuda a identificar se o problema é de autenticação ou permissões
+            // Obter token com account:write para criar o projeto
+            // Tentar primeiro com Service Account (como outras tools que funcionam)
+            // Se falhar, tentar com Client Credentials
+            let accessToken: string;
+            let useServiceAccount = true;
+            
             try {
-                const readToken = await getCachedClientCredentialsAccessToken(["account:read"]);
-                const testUrl = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
-                const testResponse = await fetchWithTimeout(testUrl, {
-                    method: "GET",
-                    headers: {
-                        "Authorization": `Bearer ${readToken}`,
-                        "Content-Type": "application/json"
-                    }
-                }, 30000, 0);
-                
-                if (!testResponse.ok && testResponse.status === 401) {
-                    throw new Error(JSON.stringify({
-                        error: "Authentication failed",
-                        message: "Não foi possível autenticar com a API. Verifique se APS_CLIENT_ID e APS_CLIENT_SECRET estão corretos.",
-                        statusCode: 401,
-                        accountId: accountIdClean,
-                        diagnostic: "Falha ao validar token com account:read - credenciais podem estar inválidas"
-                    }));
-                }
-            } catch (testError: any) {
-                // Se o erro já está formatado, re-lançar
-                if (testError instanceof Error && testError.message.startsWith("{")) {
-                    try {
-                        JSON.parse(testError.message);
-                        throw testError;
-                    } catch {
-                        // Continuar com o fluxo normal
-                    }
-                }
+                accessToken = await getAccessToken(["account:write"]);
+            } catch (serviceAccountError) {
+                // Se Service Account falhar, tentar Client Credentials
+                logger.debug("Service Account token failed, trying Client Credentials", { error: serviceAccountError });
+                accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+                useServiceAccount = false;
             }
             
-            // Agora obter token com account:write para criar o projeto
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
-            const url = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
+            // Tentar diferentes endpoints da API (alguns podem usar hq/v1, outros construction/admin/v1)
+            let url = buildApiUrl(`construction/admin/v1/accounts/${accountIdClean}/projects`);
+            let useAlternativeEndpoint = false;
             
             const projectData: any = {
                 name,
@@ -69,7 +51,7 @@ export const adminCreateProject: Tool<typeof schema> = {
             if (templateId) projectData.templateId = templateId;
             if (region) projectData.region = region;
             
-            const response = await fetchWithTimeout(url, {
+            let response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${accessToken}`,
@@ -78,8 +60,30 @@ export const adminCreateProject: Tool<typeof schema> = {
                 body: JSON.stringify(projectData)
             }, 30000, 0); // Sem retry para POST
             
+            // Se o endpoint construction/admin/v1 retornar 401 ou 404, tentar o endpoint hq/v1
+            if (!response.ok && (response.status === 401 || response.status === 404)) {
+                try {
+                    url = buildApiUrl(`hq/v1/accounts/${accountIdClean}/projects`);
+                    response = await fetchWithTimeout(url, {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${accessToken}`,
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify(projectData)
+                    }, 30000, 0);
+                    useAlternativeEndpoint = true;
+                } catch (altError) {
+                    // Se o endpoint alternativo também falhar, continuar com o erro original
+                }
+            }
+            
             if (!response.ok) {
-                const errorResponse = await handleApiError(response, { operation: "create project", accountId: accountIdClean });
+                const errorResponse = await handleApiError(response, { 
+                    operation: "create project", 
+                    accountId: accountIdClean,
+                    endpoint: useAlternativeEndpoint ? "hq/v1" : "construction/admin/v1"
+                });
                 const errorMessage = errorResponse.message;
                 
                 // Se for 401, adicionar informações de diagnóstico adicionais
@@ -89,18 +93,19 @@ export const adminCreateProject: Tool<typeof schema> = {
                         message: errorMessage,
                         statusCode: 401,
                         accountId: accountIdClean,
-                        diagnostic: "Token foi gerado com sucesso, mas a API rejeitou a requisição. Possíveis causas:",
+                        endpointUsed: useAlternativeEndpoint ? "hq/v1" : "construction/admin/v1",
+                        diagnostic: "Token foi gerado com sucesso, mas a API rejeitou a requisição. Outras tools funcionam, mas criar projetos requer permissões específicas.",
                         possibleCauses: [
-                            "A aplicação não está registrada como 'Custom Integration' no Autodesk Construction Cloud",
-                            "A aplicação não tem permissão para acessar a conta especificada",
-                            "O scope 'account:write' não está habilitado para esta aplicação",
-                            "A aplicação não tem permissões de administrador na conta"
+                            "A aplicação pode não ter permissão específica para criar projetos (diferente de outras operações)",
+                            "O endpoint de criação de projetos pode requerer permissões de administrador de conta",
+                            "Pode ser necessário ativar explicitamente a permissão de criação de projetos no ACC",
+                            "A conta pode ter restrições específicas para criação de projetos"
                         ],
                         troubleshooting: [
-                            "Verifique no portal ACC se a aplicação está registrada como Custom Integration",
-                            "Verifique se o APS_CLIENT_ID está associado à conta no ACC",
-                            "Verifique se a aplicação tem permissões de administrador",
-                            "Confirme que o scope 'account:write' está habilitado na configuração da aplicação APS"
+                            "Verifique no portal ACC se há permissões específicas para criação de projetos",
+                            "Tente criar um projeto manualmente no ACC para verificar se há restrições",
+                            "Verifique se a conta tem limite de projetos ou se precisa de aprovação",
+                            "Confirme que você tem permissões de Account Admin, não apenas Project Admin"
                         ]
                     }));
                 }
