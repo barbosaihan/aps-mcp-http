@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -23,17 +22,15 @@ export const adminCreateAccountUser: Tool<typeof schema> = {
     schema,
     callback: async ({ accountId, email, companyId, firstName, lastName, phone, jobTitle, roleIds }: SchemaType) => {
         try {
-            const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-            
-            // Remove "b." prefix from accountId if present
-            const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accountIdClean = cleanAccountId(accountId);
             
             if (!accountIdClean || accountIdClean.trim() === "") {
                 throw new Error("accountId is required and cannot be empty");
             }
             
             // Try the Admin API endpoint with accountId in the path first
-            let url = `https://developer.api.autodesk.com/admin/v1/accounts/${accountIdClean}/users`;
+            let url = buildApiUrl(`admin/v1/accounts/${accountIdClean}/users`);
             
             const userData: any = {
                 email
@@ -46,55 +43,38 @@ export const adminCreateAccountUser: Tool<typeof schema> = {
             if (jobTitle) userData.jobTitle = jobTitle;
             if (roleIds) userData.roleIds = roleIds;
             
-            let response = await fetch(url, {
+            let response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
                     "Authorization": `Bearer ${accessToken}`,
                     "Content-Type": "application/json"
                 },
                 body: JSON.stringify(userData)
-            });
+            }, 30000, 0); // Sem retry para POST
             
             // If path-based endpoint fails, try without accountId in path (legacy endpoint)
             if (!response.ok && response.status === 404) {
-                url = `https://developer.api.autodesk.com/admin/v1/users`;
+                url = buildApiUrl(`admin/v1/users`);
                 // Add accountId to body if not already there
                 if (!userData.accountId) {
                     userData.accountId = accountIdClean;
                 }
                 
-                response = await fetch(url, {
+                response = await fetchWithTimeout(url, {
                     method: "POST",
                     headers: {
                         "Authorization": `Bearer ${accessToken}`,
                         "Content-Type": "application/json"
                     },
                     body: JSON.stringify(userData)
-                });
+                }, 30000, 0); // Sem retry para POST
             }
             
             if (!response.ok) {
-                const errorText = await response.text();
-                let errorMessage = `Could not create user (HTTP ${response.status})`;
-                
-                try {
-                    const errorJson = JSON.parse(errorText);
-                    errorMessage = errorJson.developerMessage || errorJson.message || errorMessage;
-                } catch {
-                    errorMessage = errorText || errorMessage;
-                }
-                
-                throw new Error(JSON.stringify({
-                    error: "Failed to create account user",
-                    message: errorMessage,
-                    accountId: accountIdClean,
-                    email,
-                    statusCode: response.status,
-                    url: url
-                }));
+                throw await handleApiError(response, { operation: "create account user", accountId: accountIdClean, email, url });
             }
             
-            const user = await response.json();
+            const user = await response.json() as any;
             return {
                 content: [{
                     type: "text" as const,
@@ -107,17 +87,15 @@ export const adminCreateAccountUser: Tool<typeof schema> = {
                 }]
             };
         } catch (error: any) {
-            const errorMessage = error?.message || error?.toString() || "Unknown error";
-            const errorDetails = {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
                 error: "Failed to create account user",
-                message: errorMessage,
+                message: error?.message || error?.toString() || "Unknown error",
                 accountId: accountId?.replace(/^b\./, "") || "unknown",
-                email: email || "unknown",
-                ...(error?.response?.status && { statusCode: error.response.status }),
-                ...(error?.response?.data && { apiError: error.response.data })
-            };
-            
-            throw new Error(JSON.stringify(errorDetails));
+                email: email || "unknown"
+            }));
         }
     }
 };

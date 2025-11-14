@@ -45,3 +45,5 @@ export { aecdatamodelGetElementGroups } from "./aecdatamodel-get-element-groups.
 export { aecdatamodelExecuteQuery } from "./aecdatamodel-execute-query.js";
 export { aecdatamodelGetSchema } from "./aecdatamodel-get-schema.js";
 export { aecdatamodelGetElements } from "./aecdatamodel-get-elements.js";
+// BIM Models - Buscar todos os modelos BIM (DWG, IFC, RVT, NWD, NWF) na conta
+export { getAllBimModels } from "./get-all-bim-models.js";

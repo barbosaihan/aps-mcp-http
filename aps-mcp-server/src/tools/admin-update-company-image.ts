@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -17,37 +16,48 @@ export const adminUpdateCompanyImage: Tool<typeof schema> = {
     description: "Update the image for a company in Autodesk Construction Cloud using Admin API",
     schema,
     callback: async ({ companyId, imageUrl, imageData }: SchemaType) => {
-        if (!imageUrl && !imageData) {
-            throw new Error("Either imageUrl or imageData must be provided");
+        try {
+            if (!imageUrl && !imageData) {
+                throw new Error("Either imageUrl or imageData must be provided");
+            }
+            
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const url = buildApiUrl(`admin/v1/companies/${companyId}/image`);
+            
+            const imagePayload: any = {};
+            if (imageUrl) imagePayload.imageUrl = imageUrl;
+            if (imageData) imagePayload.imageData = imageData;
+            
+            const response = await fetchWithTimeout(url, {
+                method: "PATCH",
+                headers: {
+                    "Authorization": `Bearer ${accessToken}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(imagePayload)
+            }, 30000, 0); // Sem retry para PATCH
+            
+            if (!response.ok) {
+                throw await handleApiError(response, { operation: "update company image", companyId });
+            }
+            
+            const result = await response.json() as any;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify(result)
+                }]
+            };
+        } catch (error: any) {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
+                error: "Failed to update company image",
+                message: error?.message || error?.toString() || "Unknown error",
+                companyId: companyId || "unknown"
+            }));
         }
-        
-        const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-        const url = `https://developer.api.autodesk.com/admin/v1/companies/${companyId}/image`;
-        
-        const imagePayload: any = {};
-        if (imageUrl) imagePayload.imageUrl = imageUrl;
-        if (imageData) imagePayload.imageData = imageData;
-        
-        const response = await fetch(url, {
-            method: "PATCH",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(imagePayload)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Could not update company image: ${await response.text()}`);
-        }
-        
-        const result = await response.json();
-        return {
-            content: [{
-                type: "text" as const,
-                text: JSON.stringify(result)
-            }]
-        };
     }
 };
 

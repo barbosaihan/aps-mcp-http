@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -19,37 +18,47 @@ export const adminUpdateProjectUser: Tool<typeof schema> = {
     description: "Update a user's information in a project using Admin API",
     schema,
     callback: async ({ projectId, userId, roleIds, permissions, companyId }: SchemaType) => {
-        const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-        
-        // Remove "b." prefix from projectId if present
-        const projectIdClean = projectId.startsWith("b.") ? projectId.substring(2) : projectId;
-        const url = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectIdClean}/users/${userId}`;
-        
-        const userData: any = {};
-        if (roleIds) userData.roleIds = roleIds;
-        if (permissions) userData.permissions = permissions;
-        if (companyId) userData.companyId = companyId;
-        
-        const response = await fetch(url, {
-            method: "PATCH",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(userData)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Could not update user: ${await response.text()}`);
+        try {
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const projectIdClean = cleanProjectId(projectId);
+            const url = buildApiUrl(`construction/admin/v1/projects/${projectIdClean}/users/${userId}`);
+            
+            const userData: any = {};
+            if (roleIds) userData.roleIds = roleIds;
+            if (permissions) userData.permissions = permissions;
+            if (companyId) userData.companyId = companyId;
+            
+            const response = await fetchWithTimeout(url, {
+                method: "PATCH",
+                headers: {
+                    "Authorization": `Bearer ${accessToken}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(userData)
+            }, 30000, 0); // Sem retry para PATCH
+            
+            if (!response.ok) {
+                throw await handleApiError(response, { operation: "update project user", projectId: projectIdClean, userId });
+            }
+            
+            const user = await response.json() as any;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify(user)
+                }]
+            };
+        } catch (error: any) {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
+                error: "Failed to update project user",
+                message: error?.message || error?.toString() || "Unknown error",
+                projectId: projectId?.replace(/^b\./, "") || "unknown",
+                userId: userId || "unknown"
+            }));
         }
-        
-        const user = await response.json();
-        return {
-            content: [{
-                type: "text" as const,
-                text: JSON.stringify(user)
-            }]
-        };
     }
 };
 

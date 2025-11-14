@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -25,57 +24,60 @@ export const adminCreateCompany: Tool<typeof schema> = {
     description: "Create a new company in an Autodesk Construction Cloud account using Admin API. Required parameters: name and trade. See https://aps.autodesk.com/en/docs/bim360/v1/overview/parameters/ for valid trade values.",
     schema,
     callback: async ({ accountId, name, trade, address, city, state, postalCode, country, phone, website, description }: SchemaType) => {
-        const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-        
-        // Remove "b." prefix from accountId if present
-        const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
-        // Use HQ API endpoint
-        const url = `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/companies`;
-        
-        const companyData: any = {
-            name,
-            trade
-        };
-        if (phone) companyData.phone = phone;
-        if (website) companyData.website = website;
-        if (description) companyData.description = description;
-        
-        // Build address object if any address fields are provided
-        if (address || city || state || postalCode || country) {
-            companyData.address = {};
-            if (address) companyData.address.line1 = address;
-            if (city) companyData.address.city = city;
-            if (state) companyData.address.stateOrProvince = state;
-            if (postalCode) companyData.address.postalCode = postalCode;
-            if (country) companyData.address.country = country;
+        try {
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accountIdClean = cleanAccountId(accountId);
+            // Use HQ API endpoint
+            const url = buildApiUrl(`hq/v1/accounts/${accountIdClean}/companies`);
+            
+            const companyData: any = {
+                name,
+                trade
+            };
+            if (phone) companyData.phone = phone;
+            if (website) companyData.website = website;
+            if (description) companyData.description = description;
+            
+            // Build address object if any address fields are provided
+            if (address || city || state || postalCode || country) {
+                companyData.address = {};
+                if (address) companyData.address.line1 = address;
+                if (city) companyData.address.city = city;
+                if (state) companyData.address.stateOrProvince = state;
+                if (postalCode) companyData.address.postalCode = postalCode;
+                if (country) companyData.address.country = country;
+            }
+            
+            const response = await fetchWithTimeout(url, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${accessToken}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(companyData)
+            }, 30000, 0); // Sem retry para POST
+            
+            if (!response.ok) {
+                throw await handleApiError(response, { operation: "create company", accountId: accountIdClean });
+            }
+            
+            const company = await response.json() as any;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify(company)
+                }]
+            };
+        } catch (error: any) {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
+                error: "Failed to create company",
+                message: error?.message || error?.toString() || "Unknown error",
+                accountId: accountId?.replace(/^b\./, "") || "unknown"
+            }));
         }
-        
-        const response = await fetch(url, {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(companyData)
-        });
-        
-        if (!response.ok) {
-            const errorText = await response.text();
-            const errorMessage = `Could not create company: ${errorText}`;
-            // Log the request details for debugging
-            console.error("Request URL:", url);
-            console.error("Request body:", JSON.stringify(companyData, null, 2));
-            console.error("Response status:", response.status);
-            throw new Error(errorMessage);
-        }
-        
-        const company = await response.json();
-        return {
-            content: [{
-                type: "text" as const,
-                text: JSON.stringify(company)
-            }]
-        };
     }
 };
 

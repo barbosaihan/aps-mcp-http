@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { getClientCredentialsAccessToken } from "../auth.js";
-import { APS_CLIENT_ID, APS_CLIENT_SECRET } from "../config.js";
+import { getCachedClientCredentialsAccessToken, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -22,38 +21,49 @@ export const adminUpdateAccountUser: Tool<typeof schema> = {
     description: "Update a user's information in an Autodesk Construction Cloud account using Admin API",
     schema,
     callback: async ({ userId, firstName, lastName, phone, jobTitle, companyId, roleIds, status }: SchemaType) => {
-        const { access_token: accessToken } = await getClientCredentialsAccessToken(APS_CLIENT_ID!, APS_CLIENT_SECRET!, ["account:write"]);
-        const url = `https://developer.api.autodesk.com/admin/v1/users/${userId}`;
-        
-        const userData: any = {};
-        if (firstName) userData.firstName = firstName;
-        if (lastName) userData.lastName = lastName;
-        if (phone) userData.phone = phone;
-        if (jobTitle) userData.jobTitle = jobTitle;
-        if (companyId) userData.companyId = companyId;
-        if (roleIds) userData.roleIds = roleIds;
-        if (status) userData.status = status;
-        
-        const response = await fetch(url, {
-            method: "PATCH",
-            headers: {
-                "Authorization": `Bearer ${accessToken}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(userData)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`Could not update user: ${await response.text()}`);
+        try {
+            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const url = buildApiUrl(`admin/v1/users/${userId}`);
+            
+            const userData: any = {};
+            if (firstName) userData.firstName = firstName;
+            if (lastName) userData.lastName = lastName;
+            if (phone) userData.phone = phone;
+            if (jobTitle) userData.jobTitle = jobTitle;
+            if (companyId) userData.companyId = companyId;
+            if (roleIds) userData.roleIds = roleIds;
+            if (status) userData.status = status;
+            
+            const response = await fetchWithTimeout(url, {
+                method: "PATCH",
+                headers: {
+                    "Authorization": `Bearer ${accessToken}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(userData)
+            }, 30000, 0); // Sem retry para PATCH
+            
+            if (!response.ok) {
+                throw await handleApiError(response, { operation: "update account user", userId });
+            }
+            
+            const user = await response.json() as any;
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: JSON.stringify(user)
+                }]
+            };
+        } catch (error: any) {
+            if (error instanceof Error && error.message.startsWith("{")) {
+                throw error;
+            }
+            throw new Error(JSON.stringify({
+                error: "Failed to update account user",
+                message: error?.message || error?.toString() || "Unknown error",
+                userId: userId || "unknown"
+            }));
         }
-        
-        const user = await response.json();
-        return {
-            content: [{
-                type: "text" as const,
-                text: JSON.stringify(user)
-            }]
-        };
     }
 };
 
