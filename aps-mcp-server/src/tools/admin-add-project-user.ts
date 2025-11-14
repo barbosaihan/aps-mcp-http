@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { logger } from "../utils/logger.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -24,7 +25,17 @@ export const adminAddProjectUser: Tool<typeof schema> = {
                 throw new Error("Either email or userId must be provided");
             }
             
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            // Tentar primeiro com Service Account (como outras tools que funcionam)
+            // Se falhar, tentar com Client Credentials
+            let accessToken: string;
+            try {
+                accessToken = await getAccessToken(["account:write"]);
+            } catch (serviceAccountError) {
+                // Se Service Account falhar, tentar Client Credentials
+                logger.debug("Service Account token failed, trying Client Credentials", { error: serviceAccountError });
+                accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            }
+            
             const projectIdClean = cleanProjectId(projectId);
             
             if (!projectIdClean || projectIdClean.trim() === "") {
