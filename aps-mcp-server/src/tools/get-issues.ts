@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
-import { getAccessToken, resolveProjectId } from "./common.js";
+import { getAccessToken, resolveProjectId, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -12,9 +12,9 @@ export const getIssues: Tool<typeof schema> = {
     title: "get-issues",
     description: "List all issues in a project. Accepts either a project GUID or project name. If a name is provided, accountId is required.",
     schema,
-    callback: async ({ projectId, accountId }) => {
+    callback: async ({ projectId, accountId }, context?: { session?: Session }) => {
         try {
-            const accessToken = await getAccessToken(["data:read"]);
+            const accessToken = await getAccessToken(["data:read"], context?.session);
             const issuesClient = new IssuesClient();
             
             // Resolver projectId (GUID ou nome) para GUID válido

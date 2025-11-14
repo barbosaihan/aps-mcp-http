@@ -1,32 +1,45 @@
-// Script de teste para adicionar usuário a todos os projetos de uma conta
-// Execute: node test-add-user-to-all-projects.js <accountId> <email>
+// Script para adicionar Service Account a todos os projetos de uma conta
+// Execute: node test-add-user-to-all-projects.js <accountId> [email]
+// Se email não for fornecido, usa APS_SA_EMAIL do .env automaticamente
+// Example: node test-add-user-to-all-projects.js 894931ce-9674-44a2-bad9-810338325031
 // Example: node test-add-user-to-all-projects.js 894931ce-9674-44a2-bad9-810338325031 usuario@example.com
 
 // O .env será carregado automaticamente pelo módulo config.js da tool compilada
 
 async function main() {
-    // Importar as tools compiladas
+    // Importar as tools compiladas e config para pegar APS_SA_EMAIL
     const { adminGetAccountProjects } = await import('./aps-mcp-server/build/tools/admin-get-account-projects.js');
     const { adminAddProjectUser } = await import('./aps-mcp-server/build/tools/admin-add-project-user.js');
+    const { APS_SA_EMAIL } = await import('./aps-mcp-server/build/config.js');
     
     const accountId = process.argv[2];
-    const userEmail = process.argv[3];
+    const userEmail = process.argv[3] || APS_SA_EMAIL;
 
-    if (!accountId || !userEmail) {
-        console.error('\n❌ Erro: Argumentos insuficientes\n');
-        console.error('Usage: node test-add-user-to-all-projects.js <accountId> <email>');
-        console.error('\nExample:');
+    if (!accountId) {
+        console.error('\n❌ Erro: accountId é obrigatório\n');
+        console.error('Usage: node test-add-user-to-all-projects.js <accountId> [email]');
+        console.error('\nExamples:');
+        console.error('  node test-add-user-to-all-projects.js 894931ce-9674-44a2-bad9-810338325031');
+        console.error('  # (usa APS_SA_EMAIL do .env automaticamente)');
         console.error('  node test-add-user-to-all-projects.js 894931ce-9674-44a2-bad9-810338325031 usuario@example.com\n');
+        process.exit(1);
+    }
+    
+    if (!userEmail) {
+        console.error('\n❌ Erro: Email não fornecido e APS_SA_EMAIL não está configurado no .env\n');
         process.exit(1);
     }
 
     console.log('\n' + '='.repeat(70));
-    console.log('🧪 Testando adição de usuário a todos os projetos');
+    console.log('🚀 Adicionando usuário a todos os projetos da conta');
     console.log('='.repeat(70));
     console.log(`\n📋 Parâmetros:`);
     console.log(`   Account ID: ${accountId}`);
     console.log(`   User Email: ${userEmail}`);
-    console.log('\n🔄 Iniciando teste...\n');
+    if (!process.argv[3] && APS_SA_EMAIL) {
+        console.log(`   ℹ️  (Email obtido automaticamente do .env - APS_SA_EMAIL)`);
+    }
+    console.log('\n🔄 Iniciando processo...\n');
 
     try {
         // 1. Listar todos os projetos da conta

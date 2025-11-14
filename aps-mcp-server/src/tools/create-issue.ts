@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getAccessToken, resolveProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, resolveProjectId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -26,9 +26,9 @@ export const createIssue: Tool<typeof schema> = {
     title: "create-issue",
     description: "Adds an issue to a project in Autodesk Construction Cloud. Accepts either a project GUID or project name. If a name is provided, accountId is required.",
     schema,
-    callback: async ({ projectId, accountId, title, issueSubtypeId, status, description, assignedTo, assignedToType, dueDate, startDate, locationId, locationDetails, rootCauseId, published }: SchemaType) => {
+    callback: async ({ projectId, accountId, title, issueSubtypeId, status, description, assignedTo, assignedToType, dueDate, startDate, locationId, locationDetails, rootCauseId, published }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getAccessToken(["data:write"]);
+            const accessToken = await getAccessToken(["data:write"], context?.session);
             
             // Resolver projectId (GUID ou nome) para GUID válido
             const projectIdClean = await resolveProjectId(projectId, accountId, accessToken);

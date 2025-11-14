@@ -12,6 +12,13 @@ import { URL } from "node:url";
 import { randomUUID } from "node:crypto";
 import * as tools from "./tools/index.js";
 import { logger } from "./utils/logger.js";
+import { APS_CLIENT_ID, APS_OAUTH_REDIRECT_URI, APS_OAUTH_SCOPES } from "./config.js";
+import {
+    generateCodeVerifier,
+    generateCodeChallenge,
+    generateState,
+    exchangeAuthorizationCode,
+} from "./auth/oauth2.js";
 
 // Tipos JSON-RPC
 interface JsonRpcRequest {
@@ -47,6 +54,20 @@ interface Session {
     createdAt: number;
     lastActivity: number;
     streams: Set<string>;
+    // OAuth2 support
+    oauth2?: {
+        accessToken: string;
+        refreshToken?: string;
+        expiresAt: number;
+        userId?: string;
+        email?: string;
+        scopes?: string[];
+    };
+    pkce?: {
+        codeVerifier: string;
+        state: string;
+        createdAt: number;
+    };
 }
 
 class MCPHttpServer {
@@ -240,6 +261,28 @@ class MCPHttpServer {
                 ...corsHeaders
             });
             res.end(JSON.stringify({ status: "ok", version: "0.0.1" }));
+            return;
+        }
+
+        // OAuth2 endpoints
+        if (url.pathname === "/oauth/authorize" && req.method === "GET") {
+            const sessionId = req.headers["mcp-session-id"] as string | undefined;
+            const session = this.getOrCreateSession(sessionId);
+            await this.handleOAuthAuthorize(req, res, session);
+            return;
+        }
+
+        if (url.pathname === "/oauth/callback" && req.method === "GET") {
+            const sessionId = req.headers["mcp-session-id"] as string | undefined;
+            const session = this.getOrCreateSession(sessionId);
+            await this.handleOAuthCallback(req, res, session);
+            return;
+        }
+
+        if (url.pathname === "/oauth/logout" && req.method === "POST") {
+            const sessionId = req.headers["mcp-session-id"] as string | undefined;
+            const session = this.getOrCreateSession(sessionId);
+            await this.handleOAuthLogout(req, res, session);
             return;
         }
 
@@ -582,7 +625,7 @@ class MCPHttpServer {
                     return this.handleToolsList(id);
 
                 case "tools/call":
-                    return await this.handleToolsCall(params, id);
+                    return await this.handleToolsCall(params, id, session);
 
                 case "ping":
                     return {
@@ -702,7 +745,8 @@ class MCPHttpServer {
      */
     private async handleToolsCall(
         params: any,
-        requestId: string | number | null | undefined
+        requestId: string | number | null | undefined,
+        session: Session
     ): Promise<JsonRpcResponse> {
         if (!params || !params.name) {
             return {
@@ -735,8 +779,10 @@ class MCPHttpServer {
 
         try {
             // Chamar tool callback
-            // ToolCallback espera (args, context) mas podemos passar só args
-            const result = await (tool.callback as any)(toolArgs, {});
+            // ToolCallback espera (args, context) - passar sessão no contexto
+            const result = await (tool.callback as any)(toolArgs, {
+                session: session,
+            });
 
             return {
                 jsonrpc: "2.0",
@@ -1068,6 +1114,211 @@ class MCPHttpServer {
         }
         message += `data: ${JSON.stringify(data)}\n\n`;
         res.write(message);
+    }
+
+    /**
+     * Handle OAuth2 authorization request
+     */
+    private async handleOAuthAuthorize(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        session: Session
+    ): Promise<void> {
+        try {
+            // 1. Gerar PKCE
+            const codeVerifier = generateCodeVerifier();
+            const codeChallenge = generateCodeChallenge(codeVerifier);
+            const state = generateState();
+
+            // 2. Armazenar na sessão
+            session.pkce = {
+                codeVerifier,
+                state,
+                createdAt: Date.now(),
+            };
+
+            // 3. Construir URL de autorização
+            const url = new URL(req.url || "/", `http://${req.headers.host}`);
+            const redirectUri =
+                url.searchParams.get("redirect_uri") ||
+                APS_OAUTH_REDIRECT_URI ||
+                "http://localhost:5173/oauth/callback";
+
+            const scopesParam = url.searchParams.get("scopes");
+            const scopes =
+                scopesParam?.split(" ") ||
+                APS_OAUTH_SCOPES?.split(" ") ||
+                ["data:read", "data:write"];
+
+            if (!APS_CLIENT_ID) {
+                throw new Error("APS_CLIENT_ID is not configured");
+            }
+
+            const authUrl = new URL(
+                "https://developer.api.autodesk.com/authentication/v2/authorize"
+            );
+            authUrl.searchParams.set("response_type", "code");
+            authUrl.searchParams.set("client_id", APS_CLIENT_ID);
+            authUrl.searchParams.set("redirect_uri", redirectUri);
+            authUrl.searchParams.set("scope", scopes.join(" "));
+            authUrl.searchParams.set("code_challenge", codeChallenge);
+            authUrl.searchParams.set("code_challenge_method", "S256");
+            authUrl.searchParams.set("state", state);
+
+            // 4. Retornar URL e sessionId
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(200, {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+            });
+            res.end(
+                JSON.stringify({
+                    authorizationUrl: authUrl.toString(),
+                    state,
+                    sessionId: session.id,
+                })
+            );
+        } catch (error: any) {
+            logger.error("OAuth authorize error", error);
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(500, {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+            });
+            res.end(JSON.stringify({ error: error.message || "Internal error" }));
+        }
+    }
+
+    /**
+     * Handle OAuth2 callback
+     */
+    private async handleOAuthCallback(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        session: Session
+    ): Promise<void> {
+        try {
+            const url = new URL(req.url || "/", `http://${req.headers.host}`);
+            const code = url.searchParams.get("code");
+            const state = url.searchParams.get("state");
+            const error = url.searchParams.get("error");
+
+            if (error) {
+                // Erro na autorização
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(
+                    JSON.stringify({
+                        error,
+                        error_description: url.searchParams.get("error_description"),
+                    })
+                );
+                return;
+            }
+
+            if (!code || !state) {
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(JSON.stringify({ error: "Missing code or state" }));
+                return;
+            }
+
+            // Verificar state
+            if (!session.pkce || session.pkce.state !== state) {
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(JSON.stringify({ error: "Invalid state" }));
+                return;
+            }
+
+            // Verificar expiração (PKCE deve ser usado em 10 minutos)
+            if (Date.now() - session.pkce.createdAt > 10 * 60 * 1000) {
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(JSON.stringify({ error: "PKCE expired" }));
+                return;
+            }
+
+            // Trocar código por token
+            const redirectUri =
+                APS_OAUTH_REDIRECT_URI || "http://localhost:5173/oauth/callback";
+
+            if (!APS_CLIENT_ID) {
+                throw new Error("APS_CLIENT_ID is not configured");
+            }
+
+            const tokens = await exchangeAuthorizationCode(
+                APS_CLIENT_ID,
+                code,
+                session.pkce.codeVerifier,
+                redirectUri
+            );
+
+            // Armazenar tokens na sessão
+            session.oauth2 = {
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token,
+                expiresAt: Date.now() + tokens.expires_in * 1000,
+                scopes: tokens.scope?.split(" ") || [],
+            };
+
+            // Limpar PKCE
+            delete session.pkce;
+
+            // Retornar sucesso
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(200, {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+            });
+            res.end(
+                JSON.stringify({
+                    success: true,
+                    sessionId: session.id,
+                    expiresAt: session.oauth2.expiresAt,
+                })
+            );
+        } catch (error: any) {
+            logger.error("OAuth callback error", error);
+            const corsHeaders = this.getCorsHeaders(req);
+            res.writeHead(500, {
+                "Content-Type": "application/json",
+                ...corsHeaders,
+            });
+            res.end(JSON.stringify({ error: error.message || "Internal error" }));
+        }
+    }
+
+    /**
+     * Handle OAuth2 logout
+     */
+    private async handleOAuthLogout(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        session: Session
+    ): Promise<void> {
+        // Limpar tokens OAuth2
+        delete session.oauth2;
+        delete session.pkce;
+
+        const corsHeaders = this.getCorsHeaders(req);
+        res.writeHead(200, {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+        });
+        res.end(JSON.stringify({ success: true }));
     }
 
     /**

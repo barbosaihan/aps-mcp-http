@@ -47,3 +47,7 @@ export { aecdatamodelGetSchema } from "./aecdatamodel-get-schema.js";
 export { aecdatamodelGetElements } from "./aecdatamodel-get-elements.js";
 // BIM Models - Buscar todos os modelos BIM (DWG, IFC, RVT, NWD, NWF) na conta
 export { getAllBimModels } from "./get-all-bim-models.js";
+// OAuth2 tools
+export { getOAuthAuthorizationUrl } from "./get-oauth-authorization-url.js";
+export { exchangeOAuthCode } from "./exchange-oauth-code.js";
+export { getToken } from "./get-token.js";

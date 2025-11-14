@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -293,9 +293,9 @@ export const getAllBimModels: Tool<typeof schema> = {
     title: "get-all-bim-models",
     description: "Busca todos os modelos BIM (DWG, IFC, RVT, NWD, NWF) em todos os projetos de uma conta Autodesk Construction Cloud. Retorna informações detalhadas incluindo links para visualização.",
     schema,
-    callback: async ({ accountId }: SchemaType) => {
+    callback: async ({ accountId }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getAccessToken(["data:read", "account:read"]);
+            const accessToken = await getAccessToken(["data:read", "account:read"], context?.session);
             const dataManagementClient = new DataManagementClient();
             
             // Validar accountId

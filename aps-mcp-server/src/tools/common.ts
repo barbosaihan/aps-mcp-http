@@ -6,6 +6,27 @@ import { getServiceAccountAccessToken, getClientCredentialsAccessToken } from ".
 import { logger } from "../utils/logger.js";
 import { measureTiming, incrementCounter, incrementErrorCounter } from "../utils/metrics.js";
 
+// Export Session type from http-server (will be defined there)
+export type Session = {
+    id: string;
+    createdAt: number;
+    lastActivity: number;
+    streams: Set<string>;
+    oauth2?: {
+        accessToken: string;
+        refreshToken?: string;
+        expiresAt: number;
+        userId?: string;
+        email?: string;
+        scopes?: string[];
+    };
+    pkce?: {
+        codeVerifier: string;
+        state: string;
+        createdAt: number;
+    };
+};
+
 export interface Tool<Args extends ZodRawShape> {
     title: string;
     description: string;
@@ -327,40 +348,112 @@ export async function fetchWithTimeout(
 }
 
 /**
- * Obtém access token usando service account (com cache)
+ * Obtém access token usando OAuth2 da sessão (OAuth2 OBRIGATÓRIO)
+ * @param scopes - Scopes necessários para o token
+ * @param session - Sessão OBRIGATÓRIA contendo tokens OAuth2
+ * @returns Access token
+ * @throws Error se não houver token OAuth2 válido
  */
-export async function getAccessToken(scopes: string[]): Promise<string> {
+export async function getAccessToken(
+    scopes: string[],
+    session?: Session
+): Promise<string> {
     return measureTiming(
         "auth.getAccessToken",
         async () => {
-            const cacheKey = scopes.join("+");
-            let credentials = credentialsCache.get(cacheKey);
-            
-            // Verifica se o token está válido (com margem de 1 minuto)
-            if (!credentials || credentials.expiresAt < Date.now() + 60000) {
-                logger.debug("Fetching new service account token", { scopes });
-                const { access_token, expires_in } = await getServiceAccountAccessToken(
-                    APS_CLIENT_ID!,
-                    APS_CLIENT_SECRET!,
-                    APS_SA_ID!,
-                    APS_SA_KEY_ID!,
-                    APS_SA_PRIVATE_KEY!,
-                    scopes
+            // OAuth2 é OBRIGATÓRIO - não há fallback para service account
+            if (!session?.oauth2?.accessToken) {
+                const error = new Error(
+                    "OAuth2 authentication required. Please authenticate with Autodesk first using the get-token tool."
                 );
-                credentials = {
-                    accessToken: access_token,
-                    expiresAt: Date.now() + expires_in * 1000
-                };
-                credentialsCache.set(cacheKey, credentials);
-                logger.debug("Service account token cached", { 
-                    scopes, 
-                    expiresIn: expires_in 
+                logger.error("OAuth2 token not available", error, {
+                    sessionId: session?.id,
+                    hasSession: !!session,
                 });
-                incrementCounter("auth.tokenCache", { type: "miss", auth: "service-account" });
-            } else {
-                incrementCounter("auth.tokenCache", { type: "hit", auth: "service-account" });
+                incrementErrorCounter("auth.missingOAuth2Token", {
+                    scopes: scopes.join(","),
+                });
+                throw error;
             }
-            return credentials.accessToken;
+
+            const expiresAt = session.oauth2.expiresAt;
+            const now = Date.now();
+
+            // Se token ainda é válido (com margem de 1 minuto)
+            if (expiresAt > now + 60000) {
+                // Verificar se tem scopes necessários
+                const hasScopes = scopes.every(
+                    (scope) => session.oauth2?.scopes?.includes(scope)
+                );
+
+                if (hasScopes) {
+                    logger.debug("Using OAuth2 token from session", {
+                        sessionId: session.id,
+                        scopes,
+                    });
+                    incrementCounter("auth.tokenCache", {
+                        type: "hit",
+                        auth: "oauth2",
+                    });
+                    return session.oauth2.accessToken;
+                } else {
+                    logger.warn("OAuth2 token missing required scopes", {
+                        sessionId: session.id,
+                        required: scopes,
+                        available: session.oauth2.scopes,
+                    });
+                    throw new Error(
+                        `OAuth2 token missing required scopes. Required: ${scopes.join(", ")}, Available: ${session.oauth2.scopes?.join(", ")}`
+                    );
+                }
+            }
+
+            // Token expirado, tentar refresh
+            if (session.oauth2.refreshToken) {
+                try {
+                    logger.debug("Refreshing OAuth2 token", {
+                        sessionId: session.id,
+                    });
+                    const { refreshAccessToken } = await import("../auth/oauth2.js");
+                    const newTokens = await refreshAccessToken(
+                        APS_CLIENT_ID!,
+                        session.oauth2.refreshToken
+                    );
+
+                    // Atualizar sessão
+                    session.oauth2 = {
+                        accessToken: newTokens.access_token,
+                        refreshToken:
+                            newTokens.refresh_token || session.oauth2.refreshToken,
+                        expiresAt: Date.now() + newTokens.expires_in * 1000,
+                        userId: session.oauth2.userId,
+                        email: session.oauth2.email,
+                        scopes: newTokens.scope?.split(" ") || [],
+                    };
+
+                    logger.debug("OAuth2 token refreshed", {
+                        sessionId: session.id,
+                        expiresIn: newTokens.expires_in,
+                    });
+                    incrementCounter("auth.tokenCache", {
+                        type: "refresh",
+                        auth: "oauth2",
+                    });
+                    return session.oauth2.accessToken;
+                } catch (error) {
+                    logger.error("Failed to refresh OAuth2 token", error, {
+                        sessionId: session.id,
+                    });
+                    throw new Error(
+                        "OAuth2 token expired and refresh failed. Please re-authenticate using the get-token tool."
+                    );
+                }
+            }
+
+            // Token expirado e sem refresh token
+            throw new Error(
+                "OAuth2 token expired and no refresh token available. Please re-authenticate using the get-token tool."
+            );
         },
         { scopes: scopes.join(",") }
     );

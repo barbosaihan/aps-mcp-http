@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken } from "./common.js";
+import { getAccessToken, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -11,9 +11,9 @@ export const getProjects: Tool<typeof schema> = {
     title: "get-projects",
     description: "List all available projects in an Autodesk Construction Cloud account",
     schema,
-    callback: async ({ accountId }) => {
+    callback: async ({ accountId }, context?: { session?: Session }) => {
         // TODO: add pagination support
-        const accessToken = await getAccessToken(["data:read"]);
+        const accessToken = await getAccessToken(["data:read"], context?.session);
         const dataManagementClient = new DataManagementClient();
         const projects = await dataManagementClient.getHubProjects(accountId, { accessToken });
         if (!projects.data) {
