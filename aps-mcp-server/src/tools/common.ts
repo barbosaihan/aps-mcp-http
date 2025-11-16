@@ -29,11 +29,17 @@ export type Session = {
     };
 };
 
+// Custom callback type that extends ToolCallback but accepts our Session context
+export type CustomToolCallback<Args extends ZodRawShape> = (
+    args: Args,
+    context?: { session?: Session }
+) => Promise<any>;
+
 export interface Tool<Args extends ZodRawShape> {
     title: string;
     description: string;
     schema: Args;
-    callback: ToolCallback<Args>;
+    callback: CustomToolCallback<Args> | ToolCallback<Args>;
 }
 
 // Cache de tokens para service account

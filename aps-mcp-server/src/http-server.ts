@@ -811,10 +811,11 @@ class MCPHttpServer {
 
         try {
             // Chamar tool callback
-            // ToolCallback espera (args, context) - passar sessão no contexto
+            // ToolCallback do SDK espera RequestHandlerExtra, mas estamos usando nosso próprio tipo
+            // Fazer cast para any para permitir passar session no contexto
             const result = await (tool.callback as any)(toolArgs, {
                 session: session,
-            });
+            } as any);
 
             return {
                 jsonrpc: "2.0",
