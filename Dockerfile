@@ -12,7 +12,7 @@ WORKDIR /app
 # Copiar arquivos de dependências
 COPY ./aps-mcp-server/package.json ./aps-mcp-server/package-lock.json* ./aps-mcp-server/yarn.lock* ./aps-mcp-server/
 
-# Instalar dependências do Node.js (apenas produção)
+# Instalar dependências do Node.js
 WORKDIR /app/aps-mcp-server
 RUN if [ -f yarn.lock ]; then yarn install --frozen-lockfile --production=false; \
     elif [ -f package-lock.json ]; then npm ci; \
@@ -24,7 +24,7 @@ COPY ./aps-mcp-server .
 # Compilar TypeScript
 RUN npm run build
 
-# Stage 2: Runtime stage - imagem final otimizada (apenas Node.js)
+# Stage 2: Runtime stage - imagem final otimizada
 FROM node:20-slim
 
 WORKDIR /app
@@ -35,7 +35,10 @@ COPY --from=builder /app/aps-mcp-server/package.json ./aps-mcp-server/
 COPY --from=builder /app/aps-mcp-server/node_modules ./aps-mcp-server/node_modules
 
 # Criar o arquivo .env com as credenciais e a chave PKCS#8 formatada
-# Esta é a única abordagem que a aplicação 'aps-mcp-server' entende.
+# NOTA: As credenciais são hardcoded aqui porque o Easypanel requer isso para o build.
+# Esta é a única abordagem que funciona com o Easypanel atualmente.
+# Em ambientes mais seguros, use variáveis de ambiente via docker-compose.
+WORKDIR /app/aps-mcp-server
 RUN echo "APS_CLIENT_ID=AvvxuMeEApz3zYlZOP7EvqXLt63nz6p75d1UTF6NEekCEHrC" > /app/aps-mcp-server/.env && \
     echo "APS_CLIENT_SECRET=Bmv8IXUhoxHUQjOARTxrZF8xUrT44A90w058rXBUKWcalTYA07cwvAxjeo9pB8TG" >> /app/aps-mcp-server/.env && \
     echo "APS_SA_ID=79N2RECLRYWB3WJ2" >> /app/aps-mcp-server/.env && \
@@ -52,6 +55,10 @@ ENV HOST=0.0.0.0
 ENV MCP_ENDPOINT=/mcp
 ENV DOCKER_ENV=true
 ENV NODE_ENV=production
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:8080/mcp', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})" || exit 1
 
 # Comando final para iniciar o servidor HTTP nativo (Streamable HTTP)
 CMD ["node", "/app/aps-mcp-server/build/http-server-main.js"]

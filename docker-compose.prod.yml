@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  aps-mcp-http:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jarvis_aps_http
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      # Variáveis de ambiente do servidor
+      - PORT=${PORT:-8080}
+      - HOST=${HOST:-0.0.0.0}
+      - MCP_ENDPOINT=${MCP_ENDPOINT:-/mcp}
+      - DOCKER_ENV=true
+      - NODE_ENV=production
+      
+      # Variáveis de ambiente do APS (OBRIGATÓRIAS)
+      # Configure essas variáveis no Easypanel ou via arquivo .env
+      - APS_CLIENT_ID=${APS_CLIENT_ID}
+      - APS_CLIENT_SECRET=${APS_CLIENT_SECRET}
+      - APS_SA_ID=${APS_SA_ID}
+      - APS_SA_EMAIL=${APS_SA_EMAIL}
+      - APS_SA_KEY_ID=${APS_SA_KEY_ID}
+      - APS_SA_PRIVATE_KEY=${APS_SA_PRIVATE_KEY}
+      
+      # Variáveis opcionais do OAuth2
+      - APS_OAUTH_REDIRECT_URI=${APS_OAUTH_REDIRECT_URI:-}
+      - APS_OAUTH_SCOPES=${APS_OAUTH_SCOPES:-}
+      
+      # Configurações de CORS (opcional)
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      
+      # Logging (opcional)
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    restart: unless-stopped
+    networks:
+      - mcp_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/mcp', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.docker.compose.project=aps-mcp-http"
+      - "com.docker.compose.service=aps-mcp-http"
+
+networks:
+  mcp_network:
+    external: true  # Assumindo que a rede já existe
+    # Se a rede não existir, remova 'external: true' para criar automaticamente
+
