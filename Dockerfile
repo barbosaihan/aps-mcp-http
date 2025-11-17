@@ -56,9 +56,10 @@ ENV MCP_ENDPOINT=/mcp
 ENV DOCKER_ENV=true
 ENV NODE_ENV=production
 
-# Healthcheck
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/mcp', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})" || exit 1
+# Healthcheck - usa variável de ambiente PORT ou padrão 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
+  CMD node -e "const port = process.env.PORT || '8080'; require('http').get('http://localhost:' + port + '/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"
 
 # Comando final para iniciar o servidor HTTP nativo (Streamable HTTP)
+# Usar exec para garantir que o processo seja o PID 1 e receba sinais corretamente
 CMD ["node", "/app/aps-mcp-server/build/http-server-main.js"]

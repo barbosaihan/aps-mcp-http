@@ -41,9 +41,28 @@ process.on("SIGINT", async () => {
     process.exit(0);
 });
 
-// Iniciar servidor
+// Iniciar servidor e manter processo vivo
 server.start().catch((error) => {
     logger.error("Failed to start server", error);
     process.exit(1);
+});
+
+// Manter processo vivo - prevenir que o Node.js termine
+// O servidor HTTP mantém o event loop ativo, mas vamos garantir
+process.on("uncaughtException", (error) => {
+    logger.error("Uncaught exception", error);
+    // Não sair imediatamente - tentar continuar
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+    logger.error("Unhandled rejection", reason as Error, { promise });
+    // Não sair imediatamente - tentar continuar
+});
+
+// Log para debug - confirmar que o processo está rodando
+logger.info("Process started, waiting for requests...", {
+    pid: process.pid,
+    port: PORT,
+    host: HOST,
 });
 
