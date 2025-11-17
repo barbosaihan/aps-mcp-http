@@ -10,7 +10,9 @@ if (!APS_CLIENT_ID || !APS_CLIENT_SECRET || !APS_SA_ID || !APS_SA_EMAIL || !APS_
 
 const server = new McpServer({ name: "autodesk-platform-services", version: "0.0.1" });
 for (const tool of Object.values(tools)) {
-    server.tool(tool.title, tool.description, tool.schema, tool.callback);
+    // Cast callback to ToolCallback for SDK compatibility
+    // Our CustomToolCallback is compatible at runtime but has different types
+    server.tool(tool.title, tool.description, tool.schema, tool.callback as any);
 }
 
 try {

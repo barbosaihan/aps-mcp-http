@@ -71,7 +71,7 @@ export const getAccounts: Tool<typeof schema> = {
                 throw new Error(`ACC API request failed: ${response.status} ${response.statusText} - ${errorText.substring(0, 200)}`);
             }
             
-            const result = await response.json();
+            const result = await response.json() as any;
             
             logger.info("get-accounts: ACC API response received", {
                 sessionId: context?.session?.id,

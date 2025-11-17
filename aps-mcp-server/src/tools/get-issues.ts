@@ -24,7 +24,7 @@ export const getIssues: Tool<typeof schema> = {
             const issues = await issuesClient.getIssues(cleanedProjectId, { accessToken });
             
             // Handle different response formats
-            let results = null;
+            let results: any[] | null = null;
             if (issues?.results && Array.isArray(issues.results)) {
                 results = issues.results;
             } else if (Array.isArray(issues)) {

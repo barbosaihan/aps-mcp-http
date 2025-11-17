@@ -229,7 +229,7 @@ export const getAllIssues: Tool<typeof schema> = {
                     const issues = await issuesClient.getIssues(projectId, { accessToken });
                     
                     // Handle different response formats - same logic as get-issues.ts
-                    let results = null;
+                    let results: any[] | null = null;
                     if (issues?.results && Array.isArray(issues.results)) {
                         results = issues.results;
                     } else if (Array.isArray(issues)) {

@@ -1,4 +1,4 @@
-import { ZodRawShape } from "zod";
+import { ZodRawShape, z } from "zod";
 import { ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import fetch, { RequestInit, Response } from "node-fetch";
 import { APS_CLIENT_ID, APS_CLIENT_SECRET, APS_SA_ID, APS_SA_KEY_ID, APS_SA_PRIVATE_KEY } from "../config.js";
@@ -29,9 +29,13 @@ export type Session = {
     };
 };
 
-// Custom callback type that extends ToolCallback but accepts our Session context
+// Custom callback type that accepts parsed values (not Zod schemas) and our Session context
+// Args is the ZodRawShape, we infer the parsed type by creating a ZodObject
+// Using a helper type to properly infer the parsed type from ZodRawShape
+type InferArgs<Args extends ZodRawShape> = z.infer<z.ZodObject<Args>>;
+
 export type CustomToolCallback<Args extends ZodRawShape> = (
-    args: Args,
+    args: InferArgs<Args>,
     context?: { session?: Session }
 ) => Promise<any>;
 
@@ -39,7 +43,9 @@ export interface Tool<Args extends ZodRawShape> {
     title: string;
     description: string;
     schema: Args;
-    callback: CustomToolCallback<Args> | ToolCallback<Args>;
+    // Accept both our CustomToolCallback and the SDK's ToolCallback
+    // Also accept any to allow callbacks with implicit any types (they work at runtime)
+    callback: CustomToolCallback<Args> | ToolCallback<Args> | any;
 }
 
 // Cache de tokens para service account
@@ -476,7 +482,7 @@ export async function getCachedClientCredentialsAccessToken(scopes: string[]): P
         async () => {
             // Validar que as credenciais estão configuradas
             if (!APS_CLIENT_ID || !APS_CLIENT_SECRET) {
-                const missingVars = [];
+                const missingVars: string[] = [];
                 if (!APS_CLIENT_ID) missingVars.push("APS_CLIENT_ID");
                 if (!APS_CLIENT_SECRET) missingVars.push("APS_CLIENT_SECRET");
                 throw new Error(JSON.stringify({
