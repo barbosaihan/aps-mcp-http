@@ -305,6 +305,12 @@ class MCPHttpServer {
         }
 
         if (url.pathname === "/oauth/callback" && req.method === "GET") {
+            logger.info("OAuth2 callback endpoint accessed", {
+                url: req.url,
+                origin: req.headers.origin,
+                hasSessionId: !!req.headers["mcp-session-id"],
+                sessionId: req.headers["mcp-session-id"] ? (req.headers["mcp-session-id"] as string).substring(0, 8) + "..." : undefined,
+            });
             const sessionId = req.headers["mcp-session-id"] as string | undefined;
             const session = this.getOrCreateSession(sessionId);
             await this.handleOAuthCallback(req, res, session);
