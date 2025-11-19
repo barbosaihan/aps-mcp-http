@@ -1248,7 +1248,8 @@ class MCPHttpServer {
             const errorDescription = url.searchParams.get("error_description");
 
             if (error) {
-                logger.error("OAuth2 authorization error from Autodesk", new Error(error), {
+                const authError = new Error(error);
+                logger.error("OAuth2 authorization error from Autodesk", authError, {
                     sessionId: session.id,
                     error,
                     errorDescription,
@@ -1343,7 +1344,7 @@ class MCPHttpServer {
             }
 
             if (!session.pkce.codeVerifier) {
-                logger.error("OAuth2 callback - codeVerifier not found in session", {
+                logger.error("OAuth2 callback - codeVerifier not found in session", undefined, {
                     sessionId: session.id,
                 });
                 const corsHeaders = this.getCorsHeaders(req);
@@ -1352,6 +1353,19 @@ class MCPHttpServer {
                     ...corsHeaders,
                 });
                 res.end(JSON.stringify({ error: "Code verifier not found in session" }));
+                return;
+            }
+
+            if (!redirectUri) {
+                logger.error("OAuth2 callback - redirectUri not found", undefined, {
+                    sessionId: session.id,
+                });
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(JSON.stringify({ error: "Redirect URI not found" }));
                 return;
             }
 
