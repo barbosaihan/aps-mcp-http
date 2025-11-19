@@ -1233,12 +1233,26 @@ class MCPHttpServer {
         session: Session
     ): Promise<void> {
         try {
+            logger.info("OAuth2 callback received", {
+                sessionId: session.id,
+                url: req.url,
+                hasPkce: !!session.pkce,
+                pkceState: session.pkce?.state,
+                origin: req.headers.origin,
+            });
+
             const url = new URL(req.url || "/", `http://${req.headers.host}`);
             const code = url.searchParams.get("code");
             const state = url.searchParams.get("state");
             const error = url.searchParams.get("error");
+            const errorDescription = url.searchParams.get("error_description");
 
             if (error) {
+                logger.error("OAuth2 authorization error from Autodesk", new Error(error), {
+                    sessionId: session.id,
+                    error,
+                    errorDescription,
+                });
                 // Erro na autorização
                 const corsHeaders = this.getCorsHeaders(req);
                 res.writeHead(400, {
@@ -1248,13 +1262,19 @@ class MCPHttpServer {
                 res.end(
                     JSON.stringify({
                         error,
-                        error_description: url.searchParams.get("error_description"),
+                        error_description: errorDescription,
                     })
                 );
                 return;
             }
 
             if (!code || !state) {
+                logger.warn("OAuth2 callback missing parameters", {
+                    sessionId: session.id,
+                    hasCode: !!code,
+                    hasState: !!state,
+                    url: req.url,
+                });
                 const corsHeaders = this.getCorsHeaders(req);
                 res.writeHead(400, {
                     "Content-Type": "application/json",
@@ -1266,6 +1286,13 @@ class MCPHttpServer {
 
             // Verificar state
             if (!session.pkce || session.pkce.state !== state) {
+                logger.warn("OAuth2 callback - Invalid state", {
+                    sessionId: session.id,
+                    receivedState: state,
+                    expectedState: session.pkce?.state,
+                    hasPkce: !!session.pkce,
+                    pkceCreatedAt: session.pkce?.createdAt,
+                });
                 const corsHeaders = this.getCorsHeaders(req);
                 res.writeHead(400, {
                     "Content-Type": "application/json",
@@ -1276,7 +1303,13 @@ class MCPHttpServer {
             }
 
             // Verificar expiração (PKCE deve ser usado em 10 minutos)
-            if (Date.now() - session.pkce.createdAt > 10 * 60 * 1000) {
+            const pkceAge = Date.now() - session.pkce.createdAt;
+            if (pkceAge > 10 * 60 * 1000) {
+                logger.warn("OAuth2 callback - PKCE expired", {
+                    sessionId: session.id,
+                    pkceAge: pkceAge,
+                    pkceCreatedAt: session.pkce.createdAt,
+                });
                 const corsHeaders = this.getCorsHeaders(req);
                 res.writeHead(400, {
                     "Content-Type": "application/json",
@@ -1298,11 +1331,35 @@ class MCPHttpServer {
                              APS_OAUTH_REDIRECT_URI || 
                              "http://localhost:8080/oauth/callback";
                 
+                logger.warn("OAuth2 callback - redirectUri not in session, using fallback", {
+                    sessionId: session.id,
+                    fallbackRedirectUri: redirectUri,
+                });
+                
                 // Armazenar para uso futuro
                 if (session.pkce) {
                     session.pkce.redirectUri = redirectUri;
                 }
             }
+
+            if (!session.pkce.codeVerifier) {
+                logger.error("OAuth2 callback - codeVerifier not found in session", {
+                    sessionId: session.id,
+                });
+                const corsHeaders = this.getCorsHeaders(req);
+                res.writeHead(400, {
+                    "Content-Type": "application/json",
+                    ...corsHeaders,
+                });
+                res.end(JSON.stringify({ error: "Code verifier not found in session" }));
+                return;
+            }
+
+            logger.info("OAuth2 callback - exchanging code for token", {
+                sessionId: session.id,
+                redirectUri,
+                hasCodeVerifier: !!session.pkce.codeVerifier,
+            });
 
             if (!APS_CLIENT_ID) {
                 throw new Error("APS_CLIENT_ID is not configured");
@@ -1314,6 +1371,12 @@ class MCPHttpServer {
                 session.pkce.codeVerifier,
                 redirectUri
             );
+
+            logger.info("OAuth2 callback - token exchange successful", {
+                sessionId: session.id,
+                expiresIn: tokens.expires_in,
+                hasRefreshToken: !!tokens.refresh_token,
+            });
 
             // Armazenar tokens na sessão
             // Usar scopes da resposta do token, ou fallback para scopes solicitados na autorização
