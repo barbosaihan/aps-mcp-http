@@ -149,8 +149,12 @@ async function searchFilesInFolder(
                                 // Construir links úteis
                                 // Limpar projectId para o link do ACC (remover prefixo "b." se presente)
                                 const cleanProjectIdForLink = projectId.replace(/^b\./, '');
+
+                                // Tentar obter link direto da API (webViewLink)
+                                const apiWebViewLink = (item.links as any)?.webView?.href || (version.links as any)?.webView?.href;
+
                                 const links: any = {
-                                    viewInACC: `https://acc.autodesk.com/projects/${cleanProjectIdForLink}/folders/${folderId}/items/${item.id}`,
+                                    viewInACC: apiWebViewLink || `https://acc.autodesk.com/projects/${cleanProjectIdForLink}/folders/${folderId}/items/${item.id}`,
                                     itemId: item.id,
                                     versionId: version.id
                                 };
@@ -395,50 +399,62 @@ export const getAllBimModels: Tool<typeof schema> = {
             const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
             // 2. Para cada projeto, buscar modelos BIM
-            for (const project of projects) {
-                // Pequeno delay para evitar rate limiting e circuit breakers
-                await delay(200);
+            // Process projects in batches to improve performance while avoiding rate limiting
+            const BATCH_SIZE = 5;
 
-                const projectId = project.id?.replace(/^b\./, '') || project.id;
-                const projectName = project.name || project.attributes?.name || projectId;
+            for (let i = 0; i < projects.length; i += BATCH_SIZE) {
+                const batch = projects.slice(i, i + BATCH_SIZE);
 
-                try {
-                    // Para getProjectTopFolders, precisamos do accountId com prefixo "b." ou URN
-                    // E o projectId pode precisar ter o prefixo "b." também
-                    let projectIdForDM = projectId;
-                    if (!projectId.startsWith('b.') && !projectId.startsWith('urn:')) {
-                        projectIdForDM = `b.${projectId}`;
-                    }
+                // Process batch in parallel
+                await Promise.all(batch.map(async (project: any) => {
+                    try {
+                        const projectId = project.id?.replace(/^b\./, '') || project.id;
+                        const projectName = project.name || project.attributes?.name || projectId;
 
-                    // Buscar pastas principais do projeto
-                    const topFolders = await dataManagementClient.getProjectTopFolders(accountIdForHub, projectIdForDM, { accessToken });
+                        // Para getProjectTopFolders, precisamos do accountId com prefixo "b." ou URN
+                        // E o projectId pode precisar ter o prefixo "b." também
+                        let projectIdForDM = projectId;
+                        if (!projectId.startsWith('b.') && !projectId.startsWith('urn:')) {
+                            projectIdForDM = `b.${projectId}`;
+                        }
 
-                    if (topFolders.data) {
-                        // Processar cada pasta principal
-                        for (const folder of topFolders.data) {
-                            if (folder.type === 'folders' && folder.id) {
-                                // Limitar busca a 1000 modelos por projeto para evitar loops infinitos
-                                await searchFilesInFolder(
-                                    dataManagementClient,
-                                    projectIdForDM,
-                                    folder.id,
-                                    accessToken,
-                                    allModels,
-                                    projectName,
-                                    1000
-                                );
+                        // Buscar pastas principais do projeto
+                        const topFolders = await dataManagementClient.getProjectTopFolders(accountIdForHub, projectIdForDM, { accessToken });
+
+                        if (topFolders.data) {
+                            // Processar cada pasta principal
+                            for (const folder of topFolders.data) {
+                                if (folder.type === 'folders' && folder.id) {
+                                    // Limitar busca a 1000 modelos por projeto para evitar loops infinitos
+                                    await searchFilesInFolder(
+                                        dataManagementClient,
+                                        projectIdForDM,
+                                        folder.id,
+                                        accessToken,
+                                        allModels,
+                                        projectName,
+                                        1000
+                                    );
+                                }
                             }
                         }
+                    } catch (error: any) {
+                        // Se houver erro ao processar um projeto, continuar com o próximo
+                        // Verificar se é erro de circuit breaker ou 403 e logar apropriadamente
+                        const errorMessage = error.message || '';
+                        const projectName = project.name || project.attributes?.name || "Unknown";
+
+                        if (errorMessage.includes('circuit breaker') || errorMessage.includes('403')) {
+                            logger.warn(`Skipping project ${projectName} due to access/availability issue: ${errorMessage}`);
+                        } else {
+                            console.error(`Error processing project ${projectName}:`, errorMessage);
+                        }
                     }
-                } catch (error: any) {
-                    // Se houver erro ao processar um projeto, continuar com o próximo
-                    // Verificar se é erro de circuit breaker ou 403 e logar apropriadamente
-                    const errorMessage = error.message || '';
-                    if (errorMessage.includes('circuit breaker') || errorMessage.includes('403')) {
-                        logger.warn(`Skipping project ${projectName} due to access/availability issue: ${errorMessage}`);
-                    } else {
-                        console.error(`Error processing project ${projectName}:`, errorMessage);
-                    }
+                }));
+
+                // Add delay between batches
+                if (i + BATCH_SIZE < projects.length) {
+                    await delay(500);
                 }
             }
 
