@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -17,17 +17,17 @@ export const adminUpdateProjectUser: Tool<typeof schema> = {
     title: "admin-update-project-user",
     description: "Update a user's information in a project using Admin API",
     schema,
-    callback: async ({ projectId, userId, roleIds, permissions, companyId }: SchemaType) => {
+    callback: async ({ projectId, userId, roleIds, permissions, companyId }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accessToken = await getAccessToken(["account:write"], context?.session);
             const projectIdClean = cleanProjectId(projectId);
             const url = buildApiUrl(`construction/admin/v1/projects/${projectIdClean}/users/${userId}`);
-            
+
             const userData: any = {};
             if (roleIds) userData.roleIds = roleIds;
             if (permissions) userData.permissions = permissions;
             if (companyId) userData.companyId = companyId;
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "PATCH",
                 headers: {
@@ -36,11 +36,11 @@ export const adminUpdateProjectUser: Tool<typeof schema> = {
                 },
                 body: JSON.stringify(userData)
             }, 30000, 0); // Sem retry para PATCH
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "update project user", projectId: projectIdClean, userId });
             }
-            
+
             const user = await response.json() as any;
             return {
                 content: [{

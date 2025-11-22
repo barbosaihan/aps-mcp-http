@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -21,11 +21,11 @@ export const adminImportAccountUsers: Tool<typeof schema> = {
     title: "admin-import-account-users",
     description: "Import multiple users to an Autodesk Construction Cloud account using Admin API",
     schema,
-    callback: async ({ users }: SchemaType) => {
+    callback: async ({ users }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accessToken = await getAccessToken(["account:write"], context?.session);
             const url = buildApiUrl(`admin/v1/users/import`);
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
@@ -34,11 +34,11 @@ export const adminImportAccountUsers: Tool<typeof schema> = {
                 },
                 body: JSON.stringify({ users })
             }, 30000, 0); // Sem retry para POST
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "import account users", userCount: users.length });
             }
-            
+
             const result = await response.json() as any;
             return {
                 content: [{

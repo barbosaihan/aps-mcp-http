@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getAccessToken, getCachedClientCredentialsAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, cleanProjectId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import { logger } from "../utils/logger.js";
 import type { Tool } from "./common.js";
 
@@ -19,31 +19,29 @@ export const adminAddProjectUser: Tool<typeof schema> = {
     title: "admin-add-project-user",
     description: "Add a user to a project in Autodesk Construction Cloud using Admin API",
     schema,
-    callback: async ({ projectId, email, userId, companyId, roleIds, permissions }: SchemaType) => {
+    callback: async ({ projectId, email, userId, companyId, roleIds, permissions }: SchemaType, context?: { session?: Session }) => {
         try {
             if (!email && !userId) {
                 throw new Error("Either email or userId must be provided");
             }
-            
-            // Tentar primeiro com Service Account (como outras tools que funcionam)
-            // Se falhar, tentar com Client Credentials
+
+            // Usar token OAuth do usuário
             let accessToken: string;
             try {
-                accessToken = await getAccessToken(["account:write"]);
-            } catch (serviceAccountError) {
-                // Se Service Account falhar, tentar Client Credentials
-                logger.debug("Service Account token failed, trying Client Credentials", { error: serviceAccountError });
-                accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+                accessToken = await getAccessToken(["account:write"], context?.session);
+            } catch (error) {
+                logger.error("Failed to get OAuth token for add project user", error as Error);
+                throw error;
             }
-            
+
             const projectIdClean = cleanProjectId(projectId);
-            
+
             if (!projectIdClean || projectIdClean.trim() === "") {
                 throw new Error("projectId is required and cannot be empty");
             }
-            
+
             const url = buildApiUrl(`construction/admin/v1/projects/${projectIdClean}/users`);
-            
+
             const userData: any = {};
             if (email) userData.email = email;
             if (userId) userData.userId = userId;
@@ -54,7 +52,7 @@ export const adminAddProjectUser: Tool<typeof schema> = {
             if (!userData.products) {
                 userData.products = [];
             }
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
@@ -63,11 +61,11 @@ export const adminAddProjectUser: Tool<typeof schema> = {
                 },
                 body: JSON.stringify(userData)
             }, 30000, 0); // Sem retry para POST
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "add user to project", projectId: projectIdClean, email, userId });
             }
-            
+
             const user = await response.json() as any;
             return {
                 content: [{

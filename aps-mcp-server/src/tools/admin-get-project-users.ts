@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getAccessToken } from "./common.js";
+import { getAccessToken, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -13,9 +13,15 @@ export const adminGetProjectUsers: Tool<typeof schema> = {
     title: "admin-get-project-users",
     description: "List all users in a specific project using Admin API",
     schema,
-    callback: async ({ projectId }: SchemaType) => {
-        const accessToken = await getAccessToken(["account:read"]);
-        
+    callback: async ({ projectId }: SchemaType, context?: { session?: Session }) => {
+        let accessToken: string;
+        try {
+            accessToken = await getAccessToken(["account:read"], context?.session);
+        } catch (error) {
+            // Fallback to data:read if account:read fails
+            accessToken = await getAccessToken(["data:read"], context?.session);
+        }
+
         // Remove "b." prefix from projectId if present
         const projectIdClean = projectId.startsWith("b.") ? projectId.substring(2) : projectId;
         const url = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectIdClean}/users`;

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, getCachedClientCredentialsAccessToken, extractProjectGuid, cleanProjectId, isValidGuid, type Session } from "./common.js";
+import { getAccessToken, extractProjectGuid, cleanProjectId, isValidGuid, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {

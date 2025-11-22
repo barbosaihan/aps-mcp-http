@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -25,17 +25,17 @@ export const adminImportCompanies: Tool<typeof schema> = {
     title: "admin-import-companies",
     description: "Import multiple companies to an Autodesk Construction Cloud account using Admin API",
     schema,
-    callback: async ({ companies }: SchemaType) => {
+    callback: async ({ companies }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accessToken = await getAccessToken(["account:write"], context?.session);
             const url = buildApiUrl(`admin/v1/companies/import`);
-            
+
             // Remove "b." prefix from accountId in each company if present
             const cleanedCompanies = companies.map(company => ({
                 ...company,
                 accountId: cleanAccountId(company.accountId)
             }));
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
@@ -44,11 +44,11 @@ export const adminImportCompanies: Tool<typeof schema> = {
                 },
                 body: JSON.stringify({ companies: cleanedCompanies })
             }, 30000, 0); // Sem retry para POST
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "import companies", companyCount: companies.length });
             }
-            
+
             const result = await response.json() as any;
             return {
                 content: [{

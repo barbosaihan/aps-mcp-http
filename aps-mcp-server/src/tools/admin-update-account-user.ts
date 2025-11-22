@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -20,11 +20,11 @@ export const adminUpdateAccountUser: Tool<typeof schema> = {
     title: "admin-update-account-user",
     description: "Update a user's information in an Autodesk Construction Cloud account using Admin API",
     schema,
-    callback: async ({ userId, firstName, lastName, phone, jobTitle, companyId, roleIds, status }: SchemaType) => {
+    callback: async ({ userId, firstName, lastName, phone, jobTitle, companyId, roleIds, status }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accessToken = await getAccessToken(["account:write"], context?.session);
             const url = buildApiUrl(`admin/v1/users/${userId}`);
-            
+
             const userData: any = {};
             if (firstName) userData.firstName = firstName;
             if (lastName) userData.lastName = lastName;
@@ -33,7 +33,7 @@ export const adminUpdateAccountUser: Tool<typeof schema> = {
             if (companyId) userData.companyId = companyId;
             if (roleIds) userData.roleIds = roleIds;
             if (status) userData.status = status;
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "PATCH",
                 headers: {
@@ -42,11 +42,11 @@ export const adminUpdateAccountUser: Tool<typeof schema> = {
                 },
                 body: JSON.stringify(userData)
             }, 30000, 0); // Sem retry para PATCH
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "update account user", userId });
             }
-            
+
             const user = await response.json() as any;
             return {
                 content: [{

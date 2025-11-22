@@ -20,7 +20,7 @@ const BIM_FILE_EXTENSIONS_UPPER = BIM_FILE_EXTENSIONS.map(ext => ext.toUpperCase
 function isBimModelFile(fileName: string): boolean {
     const lowerFileName = fileName.toLowerCase();
     return BIM_FILE_EXTENSIONS.some(ext => lowerFileName.endsWith(ext)) ||
-           BIM_FILE_EXTENSIONS_UPPER.some(ext => fileName.endsWith(ext));
+        BIM_FILE_EXTENSIONS_UPPER.some(ext => fileName.endsWith(ext));
 }
 
 /**
@@ -42,7 +42,7 @@ async function searchFilesInFolder(
     try {
         // Buscar conteúdo da pasta
         const contents = await dataManagementClient.getFolderContents(projectId, folderId, { accessToken });
-        
+
         if (!contents.data) {
             return;
         }
@@ -61,12 +61,12 @@ async function searchFilesInFolder(
             } else if (item.type === 'items') {
                 // Se for um item (arquivo), verificar se é um modelo BIM
                 const fileName = item.attributes?.displayName || '';
-                
+
                 if (isBimModelFile(fileName)) {
                     try {
                         // Buscar versões do item
                         const versions = await dataManagementClient.getItemVersions(projectId, item.id, { accessToken });
-                        
+
                         if (versions.data && versions.data.length > 0) {
                             // Processar cada versão (geralmente queremos a versão mais recente)
                             // Vamos processar todas as versões para ter histórico completo
@@ -74,9 +74,9 @@ async function searchFilesInFolder(
                                 const versionAttributes = version.attributes || {};
                                 const storageData = version.relationships?.storage?.data;
                                 const versionData = version as any; // Usar any para acessar propriedades que podem não estar tipadas
-                                
+
                                 // Log removido para melhorar performance
-                                
+
                                 // Extrair informações do modelo
                                 const modelInfo: any = {
                                     projectId: projectId,
@@ -161,7 +161,7 @@ async function searchFilesInFolder(
                                 const derivativesDataForViewer = version.relationships?.derivatives?.data;
                                 const convertedUrn = derivativesDataForViewer?.id;
                                 const hasConvertedUrn = convertedUrn && convertedUrn.startsWith('urn:');
-                                
+
                                 if (hasConvertedUrn && convertedUrn) {
                                     // Modelo convertido - usar URN de derivatives para APS Viewer
                                     try {
@@ -250,15 +250,15 @@ function formatModelsAsTable(models: any[]): string {
 
     // Linhas da tabela
     const rows = models.map(model => {
-        const fileSize = model.fileSize > 0 
+        const fileSize = model.fileSize > 0
             ? `${(model.fileSize / 1024 / 1024).toFixed(2)} MB`
             : 'N/A';
-        
+
         const createdBy = model.createUserName || 'N/A';
-        const createdAt = model.createTime 
+        const createdAt = model.createTime
             ? new Date(model.createTime).toLocaleString()
             : 'N/A';
-        
+
         const viewInACC = model.links?.viewInACC || 'N/A';
         const viewerUrl = model.links?.viewerUrl || 'N/A';
 
@@ -278,7 +278,7 @@ function formatModelsAsTable(models: any[]): string {
     // Construir tabela em formato Markdown
     let table = `| ${headers.join(' | ')} |\n`;
     table += `| ${headers.map(() => '---').join(' | ')} |\n`;
-    
+
     for (const row of rows) {
         table += `| ${row.join(' | ')} |\n`;
     }
@@ -294,10 +294,30 @@ export const getAllBimModels: Tool<typeof schema> = {
     description: "Busca todos os modelos BIM (DWG, IFC, RVT, NWD, NWF) em todos os projetos de uma conta Autodesk Construction Cloud. Retorna informações detalhadas incluindo links para visualização.",
     schema,
     callback: async ({ accountId }: SchemaType, context?: { session?: Session }) => {
+        const { logger } = await import("../utils/logger.js");
+
         try {
-            const accessToken = await getAccessToken(["data:read", "account:read"], context?.session);
+            logger.info("get-all-bim-models: Starting", {
+                sessionId: context?.session?.id,
+                hasSession: !!context?.session,
+                hasOAuth2: !!context?.session?.oauth2,
+                oauth2Scopes: context?.session?.oauth2?.scopes,
+            });
+
+            let accessToken: string;
+            try {
+                // Tentar obter token com todos os scopes ideais
+                accessToken = await getAccessToken(["data:read", "account:read"], context?.session);
+            } catch (error: any) {
+                logger.warn("get-all-bim-models: Failed with full scopes, trying data:read only", {
+                    error: error.message
+                });
+                // Fallback: tentar apenas data:read (pode limitar algumas funcionalidades mas permite listar arquivos)
+                accessToken = await getAccessToken(["data:read"], context?.session);
+            }
+
             const dataManagementClient = new DataManagementClient();
-            
+
             // Validar accountId
             if (!accountId || accountId.trim() === '') {
                 throw new Error("accountId é obrigatório e não pode estar vazio");
@@ -310,10 +330,10 @@ export const getAllBimModels: Tool<typeof schema> = {
                 // Tentar com prefixo "b." primeiro
                 accountIdForHub = `b.${accountId}`;
             }
-            
+
             // Para Admin API, precisamos do accountId sem prefixo
             const accountIdClean = cleanAccountId(accountId);
-            
+
             // 1. Listar todos os projetos da conta usando Admin API (mais confiável)
             let projects: any[] = [];
             try {
@@ -346,7 +366,7 @@ export const getAllBimModels: Tool<typeof schema> = {
                     throw new Error(`Não foi possível listar projetos. Admin API: ${adminError.message}. Data Management API: ${dmError.message}`);
                 }
             }
-            
+
             if (!projects || projects.length === 0) {
                 return {
                     content: [{
@@ -373,7 +393,7 @@ export const getAllBimModels: Tool<typeof schema> = {
 
                     // Buscar pastas principais do projeto
                     const topFolders = await dataManagementClient.getProjectTopFolders(accountIdForHub, projectIdForDM, { accessToken });
-                    
+
                     if (topFolders.data) {
                         // Processar cada pasta principal
                         for (const folder of topFolders.data) {
@@ -405,7 +425,7 @@ export const getAllBimModels: Tool<typeof schema> = {
                 models: allModels.map(model => {
                     // Normalizar projectId (remover prefixo "b." se presente)
                     const cleanProjectId = (model.projectId || '').replace(/^b\./, '');
-                    
+
                     return {
                         projectId: cleanProjectId,
                         projectName: model.projectName || '',

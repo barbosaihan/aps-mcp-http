@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { getCachedClientCredentialsAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError } from "./common.js";
+import { getAccessToken, cleanAccountId, buildApiUrl, fetchWithTimeout, handleApiError, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -23,13 +23,13 @@ export const adminCreateCompany: Tool<typeof schema> = {
     title: "admin-create-company",
     description: "Create a new company in an Autodesk Construction Cloud account using Admin API. Required parameters: name and trade. See https://aps.autodesk.com/en/docs/bim360/v1/overview/parameters/ for valid trade values.",
     schema,
-    callback: async ({ accountId, name, trade, address, city, state, postalCode, country, phone, website, description }: SchemaType) => {
+    callback: async ({ accountId, name, trade, address, city, state, postalCode, country, phone, website, description }: SchemaType, context?: { session?: Session }) => {
         try {
-            const accessToken = await getCachedClientCredentialsAccessToken(["account:write"]);
+            const accessToken = await getAccessToken(["account:write"], context?.session);
             const accountIdClean = cleanAccountId(accountId);
             // Use HQ API endpoint
             const url = buildApiUrl(`hq/v1/accounts/${accountIdClean}/companies`);
-            
+
             const companyData: any = {
                 name,
                 trade
@@ -37,7 +37,7 @@ export const adminCreateCompany: Tool<typeof schema> = {
             if (phone) companyData.phone = phone;
             if (website) companyData.website = website;
             if (description) companyData.description = description;
-            
+
             // Build address object if any address fields are provided
             if (address || city || state || postalCode || country) {
                 companyData.address = {};
@@ -47,7 +47,7 @@ export const adminCreateCompany: Tool<typeof schema> = {
                 if (postalCode) companyData.address.postalCode = postalCode;
                 if (country) companyData.address.country = country;
             }
-            
+
             const response = await fetchWithTimeout(url, {
                 method: "POST",
                 headers: {
@@ -56,11 +56,11 @@ export const adminCreateCompany: Tool<typeof schema> = {
                 },
                 body: JSON.stringify(companyData)
             }, 30000, 0); // Sem retry para POST
-            
+
             if (!response.ok) {
                 throw await handleApiError(response, { operation: "create company", accountId: accountIdClean });
             }
-            
+
             const company = await response.json() as any;
             return {
                 content: [{
