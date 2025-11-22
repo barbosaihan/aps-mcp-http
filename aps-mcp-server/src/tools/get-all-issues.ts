@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { IssuesClient } from "@aps_sdk/construction-issues";
 import { DataManagementClient } from "@aps_sdk/data-management";
-import { getAccessToken, getCachedClientCredentialsAccessToken, extractProjectGuid, cleanProjectId, isValidGuid } from "./common.js";
+import { getAccessToken, getCachedClientCredentialsAccessToken, extractProjectGuid, cleanProjectId, isValidGuid, type Session } from "./common.js";
 import type { Tool } from "./common.js";
 
 const schema = {
@@ -14,9 +14,9 @@ export const getAllIssues: Tool<typeof schema> = {
     title: "get-all-issues",
     description: "Get issues from all projects in an Autodesk Construction Cloud account. This is more efficient than calling get-issues for each project individually as it processes projects in parallel.",
     schema,
-    callback: async ({ accountId, status, limit = 100 }) => {
+    callback: async ({ accountId, status, limit = 100 }, context?: { session?: Session }) => {
         try {
-            const accessToken = await getAccessToken(["data:read"]);
+            const accessToken = await getAccessToken(["data:read"], context?.session);
             const accountReadToken = await getCachedClientCredentialsAccessToken(["account:read"]);
             const dataManagementClient = new DataManagementClient();
             const issuesClient = new IssuesClient();
@@ -29,7 +29,7 @@ export const getAllIssues: Tool<typeof schema> = {
             const userMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (userId -> userName)
             const roleMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (roleGroupId/roleId -> roleName)
             const companyMapByProjectId = new Map<string, Map<string, string>>(); // projectId -> (companyId -> companyName)
-            
+
             try {
                 const accountIdClean = accountId.startsWith("b.") ? accountId.substring(2) : accountId;
                 const usersUrl = `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/users`;
@@ -38,28 +38,28 @@ export const getAllIssues: Tool<typeof schema> = {
                         "Authorization": `Bearer ${accountReadToken}`
                     }
                 });
-                
+
                 if (usersResponse.ok) {
                     const usersData = await usersResponse.json();
                     const users = usersData.results || usersData.data || usersData.users || (Array.isArray(usersData) ? usersData : []);
-                    
+
                     if (Array.isArray(users)) {
                         for (const user of users) {
                             const userId = user.id || user.userId;
                             const userUid = user.uid;
                             const userEmail = user.email;
                             const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || userEmail || "Unknown";
-                            
+
                             // Map by ID (GUID)
                             if (userId) {
                                 userMapById.set(userId, userName);
                             }
-                            
+
                             // Map by UID (alphanumeric like "3NB2QWPLPJNR55VY")
                             if (userUid) {
                                 userMapByUid.set(String(userUid), userName);
                             }
-                            
+
                             // Map by email (as fallback)
                             if (userEmail) {
                                 userMapByEmail.set(userEmail, userName);
@@ -78,14 +78,14 @@ export const getAllIssues: Tool<typeof schema> = {
             const projects = await dataManagementClient.getHubProjects(accountIdWithPrefix, { accessToken });
             if (!projects.data || projects.data.length === 0) {
                 return {
-                    content: [{ 
-                        type: "text", 
-                        text: JSON.stringify({ 
-                            message: "No projects found", 
-                            accountId, 
+                    content: [{
+                        type: "text",
+                        text: JSON.stringify({
+                            message: "No projects found",
+                            accountId,
                             count: 0,
                             issues: []
-                        }) 
+                        })
                     }]
                 };
             }
@@ -94,10 +94,10 @@ export const getAllIssues: Tool<typeof schema> = {
             const projectIssuesPromises = projects.data.map(async (project) => {
                 try {
                     const projectName = project.attributes?.name || (project as any).name || "Unknown";
-                    
+
                     // Extrair GUID válido do projeto
                     let projectId = extractProjectGuid(project);
-                    
+
                     // Se não encontrou GUID válido, tentar limpar o ID padrão
                     if (!projectId && project.id) {
                         const cleanedId = cleanProjectId(project.id);
@@ -108,7 +108,7 @@ export const getAllIssues: Tool<typeof schema> = {
                             projectId = cleanedId;
                         }
                     }
-                    
+
                     // Validação final: garantir que não estamos usando o nome como ID
                     if (!projectId || projectId === projectName || !isValidGuid(projectId)) {
                         // Construir mensagem de erro detalhada para debugging
@@ -118,11 +118,11 @@ export const getAllIssues: Tool<typeof schema> = {
                             relationships: project.relationships,
                             name: projectName
                         };
-                        return { 
-                            projectId: null, 
-                            projectName, 
-                            issues: [], 
-                            error: `Invalid project ID: project "${projectName}" does not have a valid GUID. Received project.id="${project.id}". This may indicate the SDK returned unexpected data format. Project data: ${JSON.stringify(projectDebugInfo)}` 
+                        return {
+                            projectId: null,
+                            projectName,
+                            issues: [],
+                            error: `Invalid project ID: project "${projectName}" does not have a valid GUID. Received project.id="${project.id}". This may indicate the SDK returned unexpected data format. Project data: ${JSON.stringify(projectDebugInfo)}`
                         };
                     }
 
@@ -145,15 +145,15 @@ export const getAllIssues: Tool<typeof schema> = {
                                 "Authorization": `Bearer ${accountReadToken}`
                             }
                         });
-                        
+
                         if (projectUsersResponse.ok) {
                             const projectUsersData = await projectUsersResponse.json();
                             const projectUsers = projectUsersData.results || projectUsersData.data || projectUsersData.users || (Array.isArray(projectUsersData) ? projectUsersData : []);
-                            
+
                             if (Array.isArray(projectUsers)) {
                                 const projectUserMap = new Map<string, string>();
                                 const projectRoleMap = new Map<string, string>();
-                                
+
                                 for (const user of projectUsers) {
                                     // Map user IDs
                                     const possibleIds = [
@@ -164,15 +164,15 @@ export const getAllIssues: Tool<typeof schema> = {
                                         String(user.id),
                                         String(user.userId)
                                     ].filter(Boolean);
-                                    
+
                                     const userName = user.name || user.displayName || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Unknown";
-                                    
+
                                     for (const id of possibleIds) {
                                         if (id) {
                                             projectUserMap.set(String(id), userName);
                                         }
                                     }
-                                    
+
                                     // Map roles from user (roleGroupId and roleId)
                                     if (user.roles && Array.isArray(user.roles)) {
                                         for (const role of user.roles) {
@@ -185,7 +185,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                         }
                                     }
                                 }
-                                
+
                                 if (projectUserMap.size > 0) {
                                     userMapByProjectId.set(projectId, projectUserMap);
                                 }
@@ -194,7 +194,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                 }
                             }
                         }
-                        
+
                         // Get project companies (requires account:read permission)
                         const projectCompaniesUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/companies`;
                         const projectCompaniesResponse = await fetch(projectCompaniesUrl, {
@@ -202,11 +202,11 @@ export const getAllIssues: Tool<typeof schema> = {
                                 "Authorization": `Bearer ${accountReadToken}`
                             }
                         });
-                        
+
                         if (projectCompaniesResponse.ok) {
                             const projectCompaniesData = await projectCompaniesResponse.json();
                             const projectCompanies = projectCompaniesData.results || projectCompaniesData.data || projectCompaniesData.companies || (Array.isArray(projectCompaniesData) ? projectCompaniesData : []);
-                            
+
                             if (Array.isArray(projectCompanies)) {
                                 const projectCompanyMap = new Map<string, string>();
                                 for (const company of projectCompanies) {
@@ -216,7 +216,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                         projectCompanyMap.set(String(companyId), companyName);
                                     }
                                 }
-                                
+
                                 if (projectCompanyMap.size > 0) {
                                     companyMapByProjectId.set(projectId, projectCompanyMap);
                                 }
@@ -225,9 +225,9 @@ export const getAllIssues: Tool<typeof schema> = {
                     } catch (error) {
                         // Continue if project data fetch fails
                     }
-                    
+
                     const issues = await issuesClient.getIssues(projectId, { accessToken });
-                    
+
                     // Handle different response formats - same logic as get-issues.ts
                     let results: any[] | null = null;
                     if (issues?.results && Array.isArray(issues.results)) {
@@ -252,13 +252,13 @@ export const getAllIssues: Tool<typeof schema> = {
                     // Add project info to each issue and resolve assignedTo to user name
                     const issuesWithProject = (results || []).map((issue: any) => {
                         const issueCopy = JSON.parse(JSON.stringify(issue)); // Deep copy
-                        
+
                         // Helper function to resolve assignedTo to name based on type
                         const resolveAssignedToName = (assignedTo: any, assignedToType: string | undefined): string | null => {
                             if (!assignedTo) return null;
-                            
+
                             let searchId: string | null = null;
-                            
+
                             // If assignedTo is a string, use it directly
                             if (typeof assignedTo === 'string') {
                                 searchId = assignedTo;
@@ -267,12 +267,12 @@ export const getAllIssues: Tool<typeof schema> = {
                             else if (typeof assignedTo === 'object') {
                                 searchId = assignedTo.id || assignedTo.uid || assignedTo.email || null;
                             }
-                            
+
                             if (!searchId) return null;
-                            
+
                             // Determine type from assignedToType or try to infer
                             const type = (assignedToType || issueCopy.assignedToType || 'user').toLowerCase();
-                            
+
                             // If type is "role", try role maps
                             if (type === 'role') {
                                 const projectRoleMap = roleMapByProjectId.get(projectId);
@@ -280,7 +280,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                     return projectRoleMap.get(searchId)!;
                                 }
                             }
-                            
+
                             // If type is "company", try company maps
                             if (type === 'company') {
                                 const projectCompanyMap = companyMapByProjectId.get(projectId);
@@ -288,29 +288,29 @@ export const getAllIssues: Tool<typeof schema> = {
                                     return projectCompanyMap.get(searchId)!;
                                 }
                             }
-                            
+
                             // If type is "user" or unknown, try user maps
                             // First, try project-specific user map (for project-specific IDs)
                             const projectUserMap = userMapByProjectId.get(projectId);
                             if (projectUserMap && projectUserMap.has(searchId)) {
                                 return projectUserMap.get(searchId)!;
                             }
-                            
+
                             // Try lookup by GUID (id)
                             if (userMapById.has(searchId)) {
                                 return userMapById.get(searchId)!;
                             }
-                            
+
                             // Try lookup by UID (alphanumeric)
                             if (userMapByUid.has(searchId)) {
                                 return userMapByUid.get(searchId)!;
                             }
-                            
+
                             // Try lookup by email
                             if (userMapByEmail.has(searchId)) {
                                 return userMapByEmail.get(searchId)!;
                             }
-                            
+
                             // If still not found and no type specified, try role as fallback (for IDs like "622000276")
                             if (!assignedToType) {
                                 const projectRoleMap = roleMapByProjectId.get(projectId);
@@ -318,22 +318,22 @@ export const getAllIssues: Tool<typeof schema> = {
                                     return projectRoleMap.get(searchId)!;
                                 }
                             }
-                            
+
                             return null;
                         };
-                        
+
                         // Check multiple possible locations for assignedTo
                         const assignedTo = issueCopy.assignedTo || issueCopy.attributes?.assignedTo || issueCopy.relationships?.assignedTo?.data?.id || issueCopy.assignedToId;
                         const assignedToType = issueCopy.assignedToType || issueCopy.attributes?.assignedToType;
-                        
+
                         // Resolve assignedTo to name based on type (user, role, or company)
                         const resolvedName = resolveAssignedToName(assignedTo, assignedToType);
-                        
+
                         // If we found a name, add it to the issue
                         if (resolvedName) {
                             // Add assignedToName field
                             issueCopy.assignedToName = resolvedName;
-                            
+
                             // Also add to attributes if it exists
                             if (issueCopy.attributes) {
                                 issueCopy.attributes.assignedToName = resolvedName;
@@ -341,7 +341,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                 issueCopy.attributes = { ...issueCopy.attributes, assignedToName: resolvedName };
                             }
                         }
-                        
+
                         // Add issue URL for direct access
                         const issueId = issueCopy.id || issueCopy.displayId || issueCopy.issueId;
                         if (issueId && projectId) {
@@ -351,7 +351,7 @@ export const getAllIssues: Tool<typeof schema> = {
                                 issueCopy.attributes.issueUrl = issueCopy.issueUrl;
                             }
                         }
-                        
+
                         return {
                             ...issueCopy,
                             _projectId: projectId,
@@ -370,7 +370,7 @@ export const getAllIssues: Tool<typeof schema> = {
                     const projectName = project.attributes?.name || (project as any).name || "Unknown";
                     const projectId = extractProjectGuid(project) || project.id || "Unknown";
                     const errorMessage = error?.message || error?.toString() || "Unknown error";
-                    
+
                     // Incluir detalhes do erro para debugging
                     let detailedError = errorMessage;
                     if (error?.response?.data || error?.response?.status) {
@@ -387,7 +387,7 @@ export const getAllIssues: Tool<typeof schema> = {
                             detailedError = errorMessage;
                         }
                     }
-                    
+
                     return {
                         projectId,
                         projectName,
@@ -419,10 +419,10 @@ export const getAllIssues: Tool<typeof schema> = {
                 } else if (count > 0) {
                     summary.projectsWithIssues++;
                 }
-                
+
                 summary.totalIssues += count;
                 allIssues.push(...result.issues);
-                
+
                 summary.projects.push({
                     projectId: result.projectId,
                     projectName: result.projectName,
