@@ -16,8 +16,7 @@ export const getAllIssues: Tool<typeof schema> = {
     schema,
     callback: async ({ accountId, status, limit = 100 }, context?: { session?: Session }) => {
         try {
-            const accessToken = await getAccessToken(["data:read"], context?.session);
-            const accountReadToken = await getCachedClientCredentialsAccessToken(["account:read"]);
+            const accessToken = await getAccessToken(["data:read", "account:read"], context?.session);
             const dataManagementClient = new DataManagementClient();
             const issuesClient = new IssuesClient();
 
@@ -35,7 +34,7 @@ export const getAllIssues: Tool<typeof schema> = {
                 const usersUrl = `https://developer.api.autodesk.com/hq/v1/accounts/${accountIdClean}/users`;
                 const usersResponse = await fetch(usersUrl, {
                     headers: {
-                        "Authorization": `Bearer ${accountReadToken}`
+                        "Authorization": `Bearer ${accessToken}`
                     }
                 });
 
@@ -142,7 +141,7 @@ export const getAllIssues: Tool<typeof schema> = {
                         const projectUsersUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/users`;
                         const projectUsersResponse = await fetch(projectUsersUrl, {
                             headers: {
-                                "Authorization": `Bearer ${accountReadToken}`
+                                "Authorization": `Bearer ${accessToken}`
                             }
                         });
 
@@ -199,7 +198,7 @@ export const getAllIssues: Tool<typeof schema> = {
                         const projectCompaniesUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/companies`;
                         const projectCompaniesResponse = await fetch(projectCompaniesUrl, {
                             headers: {
-                                "Authorization": `Bearer ${accountReadToken}`
+                                "Authorization": `Bearer ${accessToken}`
                             }
                         });
 
