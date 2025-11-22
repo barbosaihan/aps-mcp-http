@@ -89,8 +89,33 @@ export const getAllIssues: Tool<typeof schema> = {
                 };
             }
 
-            // Step 2: Fetch issues from all projects in parallel
-            const projectIssuesPromises = projects.data.map(async (project) => {
+            // Step 2: Fetch issues from all projects sequentially to avoid rate limiting
+            const allIssues: any[] = [];
+            const summary = {
+                accountId,
+                totalProjects: 0,
+                projectsWithIssues: 0,
+                projectsWithErrors: 0,
+                totalIssues: 0,
+                projects: [] as any[]
+            };
+
+            // Helper for delay
+            const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+            // Filter for active projects only
+            const activeProjects = projects.data.filter((p: any) => {
+                const isActive = p.status === 'active' || p.status === 'active_project' || !p.status; // If no status, assume active (Data Management API)
+                return isActive;
+            });
+
+            summary.totalProjects = activeProjects.length;
+
+            // Process projects sequentially
+            for (const project of activeProjects) {
+                // Add delay to avoid rate limiting and circuit breakers
+                await delay(200);
+
                 try {
                     const projectName = project.attributes?.name || (project as any).name || "Unknown";
 
@@ -117,22 +142,29 @@ export const getAllIssues: Tool<typeof schema> = {
                             relationships: project.relationships,
                             name: projectName
                         };
-                        return {
+
+                        summary.projectsWithErrors++;
+                        summary.projects.push({
                             projectId: null,
                             projectName,
-                            issues: [],
-                            error: `Invalid project ID: project "${projectName}" does not have a valid GUID. Received project.id="${project.id}". This may indicate the SDK returned unexpected data format. Project data: ${JSON.stringify(projectDebugInfo)}`
-                        };
+                            issueCount: 0,
+                            hasError: true,
+                            error: `Invalid project ID: project "${projectName}" does not have a valid GUID. Received project.id="${project.id}". This may indicate the SDK returned unexpected data format.`
+                        });
+                        continue;
                     }
 
                     // Validação adicional: garantir que projectId não é o nome
                     if (projectId.toLowerCase() === projectName.toLowerCase()) {
-                        return {
+                        summary.projectsWithErrors++;
+                        summary.projects.push({
                             projectId: null,
                             projectName,
-                            issues: [],
+                            issueCount: 0,
+                            hasError: true,
                             error: `Security check failed: projectId matches project name "${projectName}". This should never happen.`
-                        };
+                        });
+                        continue;
                     }
 
                     // Get project users, roles, and companies for this specific project
@@ -358,12 +390,20 @@ export const getAllIssues: Tool<typeof schema> = {
                         };
                     });
 
-                    return {
+                    const count = issuesWithProject.length;
+                    if (count > 0) {
+                        summary.projectsWithIssues++;
+                    }
+                    summary.totalIssues += count;
+                    allIssues.push(...issuesWithProject);
+
+                    summary.projects.push({
                         projectId,
                         projectName,
-                        issues: issuesWithProject,
-                        count: issuesWithProject.length
-                    };
+                        issueCount: count,
+                        hasError: false
+                    });
+
                 } catch (error: any) {
                     // Continue processing other projects even if one fails
                     const projectName = project.attributes?.name || (project as any).name || "Unknown";
@@ -387,49 +427,16 @@ export const getAllIssues: Tool<typeof schema> = {
                         }
                     }
 
-                    return {
+                    summary.projectsWithErrors++;
+                    summary.projects.push({
                         projectId,
                         projectName,
-                        issues: [],
-                        count: 0,
+                        issueCount: 0,
+                        hasError: true,
                         error: detailedError
-                    };
+                    });
                 }
-            });
-
-            // Wait for all projects to complete
-            const projectIssuesResults = await Promise.all(projectIssuesPromises);
-
-            // Step 3: Consolidate results
-            const allIssues: any[] = [];
-            const summary = {
-                accountId,
-                totalProjects: projects.data.length,
-                projectsWithIssues: 0,
-                projectsWithErrors: 0,
-                totalIssues: 0,
-                projects: [] as any[]
-            };
-
-            projectIssuesResults.forEach((result) => {
-                const count = result.count || 0;
-                if (result.error) {
-                    summary.projectsWithErrors++;
-                } else if (count > 0) {
-                    summary.projectsWithIssues++;
-                }
-
-                summary.totalIssues += count;
-                allIssues.push(...result.issues);
-
-                summary.projects.push({
-                    projectId: result.projectId,
-                    projectName: result.projectName,
-                    issueCount: result.count,
-                    hasError: !!result.error,
-                    error: result.error || undefined
-                });
-            });
+            }
 
             // Return consolidated results
             return {

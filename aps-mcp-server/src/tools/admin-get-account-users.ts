@@ -184,8 +184,20 @@ export const adminGetAccountUsers: Tool<typeof schema> = {
 
                     const allUsers = new Map<string, any>();
 
+                    // Helper for delay
+                    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+                    // Filter for active projects only
+                    const activeProjects = projects.data.filter((p: any) => {
+                        const isActive = p.status === 'active' || p.status === 'active_project' || !p.status;
+                        return isActive;
+                    });
+
                     // Get users from each project
-                    for (const project of projects.data) {
+                    for (const project of activeProjects) {
+                        // Add delay to avoid rate limiting
+                        await delay(200);
+
                         const projectId = project.id?.replace("b.", "") || project.id;
                         try {
                             const usersUrl = `https://developer.api.autodesk.com/construction/admin/v1/projects/${projectId}/users`;
