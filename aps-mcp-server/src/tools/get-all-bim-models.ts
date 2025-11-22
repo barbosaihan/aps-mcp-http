@@ -350,7 +350,19 @@ export const getAllBimModels: Tool<typeof schema> = {
                 }
 
                 const data = await response.json() as any;
-                projects = data.results || data.data || data.projects || (Array.isArray(data) ? data : []);
+                let allProjects = data.results || data.data || data.projects || (Array.isArray(data) ? data : []);
+
+                // Filter only active projects to avoid 403 errors and circuit breakers
+                projects = allProjects.filter((p: any) => {
+                    const isActive = p.status === 'active' || p.status === 'active_project';
+                    if (!isActive) {
+                        logger.debug(`Skipping inactive project: ${p.name} (${p.status})`);
+                    }
+                    return isActive;
+                });
+
+                logger.info(`Found ${allProjects.length} total projects, ${projects.length} active projects`);
+
             } catch (adminError: any) {
                 // Se Admin API falhar, tentar usar Data Management API
                 console.warn(`Admin API failed, trying Data Management API: ${adminError.message}`);
@@ -359,7 +371,8 @@ export const getAllBimModels: Tool<typeof schema> = {
                     if (hubProjects.data) {
                         projects = hubProjects.data.map((p: any) => ({
                             id: p.id,
-                            name: p.attributes?.name || p.name
+                            name: p.attributes?.name || p.name,
+                            // Data Management API doesn't always return status, so we assume active or handle 403 later
                         }));
                     }
                 } catch (dmError: any) {
@@ -378,8 +391,14 @@ export const getAllBimModels: Tool<typeof schema> = {
 
             const allModels: any[] = [];
 
+            // Helper para delay
+            const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
             // 2. Para cada projeto, buscar modelos BIM
             for (const project of projects) {
+                // Pequeno delay para evitar rate limiting e circuit breakers
+                await delay(200);
+
                 const projectId = project.id?.replace(/^b\./, '') || project.id;
                 const projectName = project.name || project.attributes?.name || projectId;
 
@@ -413,7 +432,13 @@ export const getAllBimModels: Tool<typeof schema> = {
                     }
                 } catch (error: any) {
                     // Se houver erro ao processar um projeto, continuar com o próximo
-                    console.error(`Error processing project ${projectName}:`, error.message);
+                    // Verificar se é erro de circuit breaker ou 403 e logar apropriadamente
+                    const errorMessage = error.message || '';
+                    if (errorMessage.includes('circuit breaker') || errorMessage.includes('403')) {
+                        logger.warn(`Skipping project ${projectName} due to access/availability issue: ${errorMessage}`);
+                    } else {
+                        console.error(`Error processing project ${projectName}:`, errorMessage);
+                    }
                 }
             }
 
